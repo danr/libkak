@@ -282,6 +282,46 @@ class Kak(object):
 
 
     @contextmanager
+    def quote(kak):
+        """
+        A stab at writing a smart quoter that picks %{ or %[ or %! or ' or "
+        etc depending on which leads to the fewest quotes.
+
+        This probably sucks.
+        """
+        last = kakr._messages[-1]
+        open = Counter({k: 0 for k in '{[(!?"' + "'"})
+        closing = {'}': '{', ')': '(', ']': '['}
+        sent = []
+        parent = kak.send
+        def send_and_count(*ws):
+            for w in ws:
+                for c in w:
+                    if c in open:
+                        if open[c] is not 'unbalanced':
+                            open[c] += 1:
+                    if c in closing:
+                        open[closing[c]] -= 1;
+                        if open[closing[c]] < 0:
+                            open[closing[c]] = 'unbalanced'
+            sent.append(ws)
+        kak.send = send_and_count
+        yield
+        kak.send = parent
+        def best():
+            for k, v in six.iteritems(open):
+                if v == 0:
+                    return '%'+k, closing.get(k, k), lambda s: s
+            q = "'" if open["'"] < open['"'] else '"'
+            return q, q, lambda s: escape(s, q)
+        begin, end, escaping = best()
+        last.append(' ' + begin)
+        for line in sent:
+            kak.send(' ', *(escaping(w) for w in line))
+        kak.send(end)
+
+
+    @contextmanager
     def _local(kak, word_modifier):
         """
         Context manager for preprocessing each word to the send function.
