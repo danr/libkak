@@ -10,6 +10,7 @@ from collections import namedtuple
 from threading import Thread
 import threading
 import time
+import shutil
 
 
 def debug(*ws):
@@ -20,13 +21,12 @@ def debug(*ws):
 def headless():
     proc = Popen(['kak','-n','-ui','dummy'])
     kak = Kak('pipe', proc.pid, 'unnamed0')
-    time.sleep(0.01)
     kak._ask([], allow_noop=False)
     return kak
 
 
 def unconnected():
-    return Kak(None)
+    return Kak('unconnected')
 
 
 @contextmanager
@@ -243,8 +243,12 @@ class Kak(object):
         kak._flush()
         while kak._main._ears:
             ear, _ = kak._main._ears.popitem()
-            with open(ear, 'w') as f:
-                f.write('_q')
+            try:
+                with open(ear, 'w') as f:
+                    f.write('_q')
+            except IOError:
+                pass
+        shutil.rmtree(kak._dir)
 
 
     # edit
@@ -262,16 +266,19 @@ class Kak(object):
 
         For testing use the functions headless and unconnected.
         """
-        kak._threads  = []
         kak._ears     = {}
         kak._messages = []
-        kak._channel  = channel # 'stdout', 'pipe', None or a fifo filename
         kak._session  = session
         kak._client   = client
         kak._main     = kak
-        kak._dir      = tempfile.mkdtemp()
-        kak._send = lambda words: kak._messages.append(' '.join(words))
-        kak.val   = val_queries(kak)
+        kak._counter  = 0
+        kak._send     = lambda words: kak._messages.append(' '.join(words))
+        kak.val       = val_queries(kak)
+        if channel is 'unconnected':
+            kak._channel = None
+        else:
+            kak._channel = channel # 'stdout', 'pipe', None or a fifo filename
+            kak._dir = tempfile.mkdtemp()
 
 
 
@@ -351,8 +358,8 @@ class Kak(object):
 
 
     def _mkfifo(kak):
-        dir = tempfile.mkdtemp()
-        name = dir + '/fifo'
+        kak._counter += 1
+        name = kak._dir + '/' + str(kak._counter)
         os.mkfifo(name)
         return name
 
@@ -363,17 +370,14 @@ class Kak(object):
         return new_kak
 
 
-    def _register_thread(kak):
-        kak._main._threads.append(threading.current_thread())
-
-
     def _fork(kak):
         def decorate(target):
             new_kak = kak._duplicate()
-            thread = Thread(target=target, args=(new_kak,))
+            def target_and_then_cleanup():
+                target(new_kak)
+                shutil.rmtree(new_kak._dir)
+            thread = Thread(target=target_and_then_cleanup)
             thread.start()
-            #thread.run()
-            #kak._register_thread(thread)
         return decorate
 
 
@@ -425,7 +429,7 @@ class Kak(object):
         kak._send = parent
 
 
-    def _setup_query(kak, queries, extra_manager=None):
+    def _setup_query(kak, queries, extra_manager=None, reentrant=False):
 
         from_kak = kak._mkfifo()
         to_kak = kak._mkfifo()
@@ -434,8 +438,7 @@ class Kak(object):
 
         with nest(extra_manager, kak.sh):
             qvars = []
-            debug('len:', len(queries))
-            debug('single:', single_query)
+
             debug('queries:', queries)
             if single_query:
                 qvars.append('${'+queries[0].variable+'}')
@@ -446,8 +449,9 @@ class Kak(object):
                     qvars.append('${'+qvar+'}')
             kak.send('echo', '-n', '"' + '_s'.join(qvars) + '"', '>', from_kak)
             kak.send('cat', to_kak)
-
-            #kak.send('rm', from_kak, to_kak)
+            kak.send('rm', to_kak)
+            if not reentrant:
+                kak.send('rm', from_kak)
 
         def handle():
             debug('waiting for kak to reply on', from_kak)
@@ -514,7 +518,9 @@ class Kak(object):
 
         Used for responding indefinitely to define-command calls and hooks.
         """
-        handle = kak._setup_query(questions, extra_manager=extra_manager)
+        handle = kak._setup_query(questions,
+                                  extra_manager=extra_manager,
+                                  reentrant=True)
         @kak._fork()
         def dispatcher(dispatch_ctx):
             while True:
