@@ -245,7 +245,7 @@ class Kak(object):
 
         This is buffered and all messages are transmitted in one go.
         """
-        print('Sending: ', words)
+        # print('Sending: ', words)
         kak._send(words)
 
 
@@ -296,15 +296,15 @@ class Kak(object):
             if not kak._session:
                 raise ValueError('Cannot pipe to kak without session details')
             p = Popen(['kak','-p',str(kak._session)], stdin=PIPE)
-            print(chunk)
+            # print(chunk)
             p.communicate(chunk)
             p.wait()
-            print('waiting finished')
+            # print('waiting finished')
         else:
-            print('writing to ', kak._channel)
+            # print('writing to ', kak._channel)
             with open(kak._channel, 'w') as f:
                 f.write(chunk)
-            print('writing done ', kak._channel)
+            # print('writing done ', kak._channel)
 
         kak._messages=[]
         if not soft:
@@ -390,18 +390,22 @@ class Kak(object):
         kak._send = parent
 
 
-    def _setup_query(kak, queries, extra_manager=None):
+    def _setup_query(kak, queries, extra_manager=None, single_query=False):
         from_kak = kak._mkfifo()
         to_kak = kak._mkfifo()
 
         with nest(extra_manager, kak.sh()):
             qvars = []
-            print(queries)
-            for i, q in enumerate(queries):
-                qvar = "__kak_q"+str(i)
-                kak.send(qvar+'=${'+q.variable+'//_/_u}')
-                kak.send(qvar+'=${'+qvar+'//\\n/_n}')
-                qvars.append('${'+qvar+'}')
+            # print(queries)
+            if single_query:
+                assert len(queries) == 1
+                qvars.append('${'+queries[0].variable+'}')
+            else:
+                for i, q in enumerate(queries):
+                    qvar = "__kak_q"+str(i)
+                    kak.send(qvar+'=${'+q.variable+'//_/_u}')
+                    kak.send(qvar+'=${'+qvar+'//\\n/_n}')
+                    qvars.append('${'+qvar+'}')
             kak.send('echo', '-n', '_s'.join(qvars), '>', from_kak)
             kak.send('cat', to_kak)
             kak.send('rm', from_kak, to_kak)
@@ -409,8 +413,13 @@ class Kak(object):
         def handle():
             with open(from_kak, 'r') as f:
                 response_line = f.readline()
-            answers = tuple(q.parse(replace(ans, ('_n', '\n'), ('_', '')))
-                            for ans, q in zip(response_line.split('_s'), queries))
+                # why readine?... we use the fifo only once anyway
+                # todo: test if the fifo can be used several times...
+            if single_query:
+                answers = (queries[0].parse(response_line), )
+            else:
+                answers = tuple(q.parse(replace(ans, ('_n', '\n'), ('_', '')))
+                                for ans, q in zip(response_line.split('_s'), queries))
 
             return from_kak, to_kak, answers
 
@@ -431,7 +440,8 @@ class Kak(object):
         return kak._ask(questions)
 
 
-    def _ask(kak, questions, extra_manager=None, allow_noop=True):
+    def _ask(kak, questions, extra_manager=None, allow_noop=True,
+                  single_query=False):
         """
         Ask for the answers of some questions.
 
@@ -446,10 +456,11 @@ class Kak(object):
             with modify_manager(extra_manager):
                 return ()
         else:
-            handle = kak._setup_query(questions, extra_manager=extra_manager)
+            handle = kak._setup_query(questions, extra_manager=extra_manager,
+                                                 single_query=single_query)
             kak._flush()
             from_kak, to_kak, answers = handle()
-            print('yay:', from_kak, to_kak, answers)
+            # print('yay:', from_kak, to_kak, answers)
             kak._channel = to_kak
             return answers
 
@@ -603,9 +614,30 @@ class Kak(object):
         return kak._ask([kak.val['text']] + questions, extra_manager=manager)
 
 
+import time
+
+
+def stopwatch():
+    t0 = time.time()
+    return lambda: time.time() - t0
+
+
 if __name__ == '__main__':
     kak = headless()
-    print(kak.ask(kak.val.cursor_line, kak.val.cursor_column))
+    if True:
+        t = stopwatch()
+        for x in range(100):
+            kak.ask(kak.val.cursor_line, kak.val.cursor_column)
+        x = t()/100
+        print(x, 1/x)
+    if True:
+        t = stopwatch()
+        for x in range(100):
+            kak._ask([kak.val.cursor_line], single_query=True)
+            kak._ask([kak.val.cursor_column], single_query=True)
+        x = t()/100
+        print(x, 1/x)
+    kak.quit()
 
     import doctest
     import sys
