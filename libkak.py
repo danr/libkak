@@ -348,7 +348,8 @@ class Kak(object):
         Runs quit! when force is True.
         """
         kak.evaluate('quit' + ('!' if force else ''))
-        kak._flush()
+        if kak._channel:
+            kak._flush()
         while kak._main._ears:
             ear, _ = kak._main._ears.popitem()
             try:
@@ -553,7 +554,6 @@ class Kak(object):
             for i, q in enumerate(queries):
                 qvar = "__kak_q"+str(i)
                 kak.send(qvar+'=${'+q.variable_for_sh()+'//_/_u}')
-                kak.send(qvar+'=${'+qvar+'//\n/_n}')
                 qvars.append('${'+qvar+'}')
 
             kak.send('reply_dir=$(mktemp -d)')
@@ -561,7 +561,7 @@ class Kak(object):
             kak.send('mkfifo $reply_fifo')
             qvars.append('${reply_fifo//_/_u}')
 
-            kak.send('echo', '-n', '"' + '_s'.join(qvars) + '_S"', '>', from_kak)
+            kak.send('echo', '-n', '"' + '_s'.join(qvars) + '"', '>', from_kak)
 
             kak.send('cat ${reply_fifo}')
             kak.send('rm ${reply_fifo}')
@@ -573,26 +573,17 @@ class Kak(object):
             debug('waiting for kak to reply on', from_kak)
             kak._main._ears[from_kak] = ()
             with open(from_kak, 'rb') as f:
-                responses = decode(f.read())
-            debug('Got response: ' + responses)
-            if u'_q' in responses:
+                response = decode(f.read())
+            debug('Got response: ' + response)
+            if u'_q' in response:
                 raise RuntimeError('Quit has been called')
             del kak._main._ears[from_kak]
 
-            all_answers = []
-            for response_line in responses.split(u'_S'):
-                if response_line:
-                    raw = [ans.replace(u'_n', u'\n').replace(u'_u', u'_')
-                           for ans in response_line.split(u'_s')]
-                    to_kak = raw.pop()
-                    debug(to_kak, repr(raw))
-                    answers = tuple(q.parse(ans) for ans, q in zip(raw, queries))
-                    all_answers.append((to_kak, answers))
-
-            if reentrant:
-                return all_answers
-            else:
-                return all_answers[0]
+            raw = [ans.replace(u'_u', u'_') for ans in response.split(u'_s')]
+            to_kak = raw.pop()
+            debug(to_kak, repr(raw))
+            answers = tuple(q.parse(ans) for ans, q in zip(raw, queries))
+            return to_kak, answers
 
         return handle
 
@@ -650,17 +641,14 @@ class Kak(object):
             while True:
                 try:
                     debug('dispatching listen')
-                    all_answers = handle()
-                    debug('dispatching received', repr(all_answers))
+                    to_kak, answers = handle()
+                    debug('dispatching received', to_kak, repr(answers))
                 except RuntimeError:
                     return
-                if len(all_answers) > 1:
-                    debug('with backlog:', len(all_answers))
-                for to_kak, answers in all_answers:
-                    debug('handling one', to_kak)
-                    ctx._channel = to_kak
-                    f(ctx, *answers)
-                    ctx._flush()
+                debug('handling one', to_kak)
+                ctx._channel = to_kak
+                f(ctx, *answers)
+                ctx._flush()
 
 
     def sync(kak):
