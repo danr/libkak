@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from __future__ import print_function
 import inspect
 import sys
@@ -11,6 +12,36 @@ from threading import Thread
 import threading
 import time
 import shutil
+import six
+
+def join(words, sep=u' '):
+    """
+    Join strings or bytes into a string.
+    """
+    return decode(sep).join(decode(w) for w in words)
+
+def encode(s):
+    """
+    Encode a unicode string into bytes.
+    """
+    if isinstance(s, six.binary_type):
+        return s
+    elif isinstance(s, six.string_types):
+        return s.encode('utf-8')
+    else:
+        raise ValueError('Expected string or bytes')
+
+
+def decode(s):
+    """
+    Decode into a string (a unicode object).
+    """
+    if isinstance(s, six.binary_type):
+        return s.decode('utf-8')
+    elif isinstance(s, six.string_types):
+        return s
+    else:
+        raise ValueError('Expected string or bytes')
 
 
 def debug(*ws):
@@ -20,8 +51,9 @@ def debug(*ws):
 
 def headless():
     proc = Popen(['kak','-n','-ui','dummy'])
+    time.sleep(0.01)
     kak = Kak('pipe', proc.pid, 'unnamed0')
-    kak._ask([], allow_noop=False)
+    kak.sync()
     return kak
 
 
@@ -82,17 +114,17 @@ def single_quote_escape(string):
     """
     Backslash-escape ' and \.
     """
-    return string.replace('\\', '\\\\').replace("'", "\\'")
+    return string.replace(u'\\', u'\\\\').replace(u"'", u"\\'")
 
 
 def single_quoted(string):
-    """
+    u"""
     The string wrapped in single quotes and escaped.
 
-    >>> single_quoted("i'i")
-    "'i\\\\'i'"
+    >>> print(single_quoted(u"i'ié"))
+    'i\\'ié'
     """
-    return "'" + single_quote_escape(string) + "'"
+    return u"'" + single_quote_escape(string) + u"'"
 
 
 class Flag(object):
@@ -106,8 +138,8 @@ class Flag(object):
 
         >>> Flag('no-hooks').show()
         '-no-hooks'
-        >>> Flag('try-client', 'unnamed1').show()
-        "-try-client 'unnamed1'"
+        >>> print(Flag('try-client', 'unnamed1').show())
+        -try-client 'unnamed1'
         """
         if self.value is True:
             return '-' + self.flag
@@ -123,10 +155,10 @@ class Flag(object):
 
 def show_flags(flags):
     """
-    >>> show_flags([Flag('no_hooks'), Flag('try_client', 'unnamed1')])
-    "-no_hooks -try_client 'unnamed1'"
+    >>> print(show_flags([Flag('no_hooks'), Flag('try_client', 'unnamed1')]))
+    -no_hooks -try_client 'unnamed1'
     """
-    return ' '.join(flag.show() for flag in flags)
+    return join(flag.show() for flag in flags)
 
 
 def filter_flags(xs):
@@ -153,6 +185,12 @@ class Query(namedtuple('Query', ['kak', 'variable', 'parse'])):
     def __call__(self):
         return self.kak._ask((self,))[0]
 
+    def variable_for_sh(self):
+        if isinstance(self.variable, int):
+            return str(self.variable)
+        else:
+            return "kak_" + self.variable
+
     @staticmethod
     def parse_intlist(s):
         return [ int(x) for x in s.split(':') ]
@@ -173,15 +211,88 @@ class Query(namedtuple('Query', ['kak', 'variable', 'parse'])):
 """
 
 
-def val_queries(kak):
-    class val(object):
-        cursor_line=Query(kak, 'kak_cursor_line', int)
-        cursor_column=Query(kak, 'kak_cursor_column', int)
-        selection=Query(kak, 'kak_selection', str)
-        selections=Query(kak, 'kak_selections', lambda s: s.split(':'))
-        session=Query(kak, 'kak_session', int)
-        client=Query(kak, 'kak_client', str)
-    return val()
+class val(object):
+    def __init__(self, kak):
+        def coord(s):
+            return tuple(map(int, s.split('.')))
+
+        def selection_desc(x):
+            return tuple(map(coord, x.split(',')))
+
+        def string(x):
+            return x
+
+        def listof(p):
+            return lambda xs: [p(x) for x in xs.split(':')]
+
+        self.bufname=Query(kak, 'bufname', string)
+        self.buffile=Query(kak, 'buffile', string)
+        self.buflist=Query(kak, 'buflist', listof(string))
+        self.timestamp=Query(kak, 'timestamp', int)
+        self.selection=Query(kak, 'selection', string)
+        self.selections=Query(kak, 'selections', listof(string))
+        self.runtime=Query(kak, 'runtime', string)
+        self.session=Query(kak, 'session', string)
+        self.client=Query(kak, 'client', string)
+        self.cursor_line=Query(kak, 'cursor_line', int)
+        self.cursor_column=Query(kak, 'cursor_column', int)
+        self.cursor_char_column=Query(kak, 'cursor_char_column', int)
+        self.cursor_byte_offset=Query(kak, 'cursor_byte_offset', int)
+        self.selection_desc=Query(kak, 'selection_desc', selection_desc)
+        self.selections_desc=Query(kak, 'selections_desc', listof(selection_desc))
+        self.window_width=Query(kak, 'window_width', int)
+        self.window_height=Query(kak, 'window_height', int)
+
+class dynamic(object):
+    """
+    Access to dynamic variables: options, registers and env vars.
+
+    >>> kak = libkak.headless()
+    >>> kak.send('declare-option str executable python2')
+    >>> print(kak.opt.executable())
+    python2
+    >>> kak.opt.executable = 'python3'
+    >>> print(*kak.ask(kak.opt.executable))
+    python3
+    >>> kak.quit()
+
+    >>> kak = libkak.headless()
+    >>> kak.execute("itest<esc>Gh")
+    >>> print(*kak.ask(kak.reg['.'], kak.reg.hash))
+    test 1
+    >>> kak.quit()
+    """
+
+    def __init__(self, kak, prefix, assign_cmd):
+        self._kak = kak
+        self._prefix = prefix
+        self._assign_cmd = assign_cmd
+        self._ready = True
+
+    def __getattr__(self, name):
+        return Query(self._kak, self._prefix + '_' + name, lambda x: x)
+
+    def __getitem__(self, name):
+        reg_names = {
+            '_': "underscore",
+            '/': "slash",
+            '"': "dquote",
+            '|': "pipe",
+            '^': "caret",
+            '@': "arobase",
+            '%': "percent",
+            '.': "dot",
+            '#': "hash"
+        }
+        return self.__getattr__(reg_names.get(name, name))
+
+    def __setattr__(self, name, value):
+        if '_ready' not in self.__dict__:
+            self.__dict__[name] = value
+        elif self._assign_cmd:
+            self._kak.send(self._assign_cmd, name, value)
+        else:
+            raise RuntimeError('Cannot assign to ' + self._prefix)
 
 
 class Kak(object):
@@ -192,10 +303,7 @@ class Kak(object):
         itersel=False, save_regs=None, collapse_jumps=False
         """
         flags, keys = filter_flags(keys_and_flags)
-        kak.send("exec", show_flags(flags), single_quoted(''.join(keys)))
-
-
-    execute.no_hooks = Flag('no-hooks')
+        kak.send("exec", show_flags(flags), single_quoted(join(keys, sep='')))
 
 
     def evaluate(kak, *cmds_and_flags):
@@ -214,7 +322,7 @@ class Kak(object):
         anchor=None, placement=None, title=None
         """
         flags, text = filter_flags(text_and_flags)
-        kak.send("info", show_flags(flags), single_quoted(' '.join(text)))
+        kak.send("info", show_flags(flags), single_quoted(join(text)))
 
 
     def echo(kak, *text_and_flags):
@@ -222,7 +330,7 @@ class Kak(object):
         color=None, markup=False, debug=False
         """
         flags, text = filter_flags(text_and_flags)
-        kak.send("echo", show_flags(flags), single_quoted(' '.join(text)))
+        kak.send("echo", show_flags(flags), single_quoted(join(text)))
 
 
     def set_option(kak, scope, option, value, add=False):
@@ -233,7 +341,7 @@ class Kak(object):
         raise NotImplemented
 
 
-    def quit(kak, force=False):
+    def quit(kak, force=True):
         """
         Quit the current client.
 
@@ -248,7 +356,10 @@ class Kak(object):
                     f.write('_q')
             except IOError:
                 pass
-        shutil.rmtree(kak._dir)
+        try:
+            shutil.rmtree(kak._dir)
+        except FileNotFoundError:
+            shutil.rmtree(kak._dir)
 
 
     # edit
@@ -272,8 +383,11 @@ class Kak(object):
         kak._client   = client
         kak._main     = kak
         kak._counter  = 0
-        kak._send     = lambda words: kak._messages.append(' '.join(words))
-        kak.val       = val_queries(kak)
+        kak._send     = lambda words: kak._messages.append(join(words))
+        kak.val       = val(kak)
+        kak.opt       = dynamic(kak, 'opt', 'set-option current')
+        kak.env       = dynamic(kak, 'client_env', '')
+        kak.reg       = dynamic(kak, 'reg', 'set-register')
         if channel is 'unconnected':
             kak._channel = None
         else:
@@ -313,7 +427,7 @@ class Kak(object):
 
 
     def debug_sent(kak):
-        return '\n'.join(kak._messages)
+        return join(kak._messages, u'\n')
 
 
     def _flush(kak):
@@ -324,10 +438,13 @@ class Kak(object):
         Perhaps you want ``release``, ``ask`` or ``join``?
         """
 
-        chunk = '\n'.join(kak._messages) + '\n'
+        chunk = join(kak._messages, sep=u'\n') + u'\n'
 
         if kak._client and kak._channel == 'pipe':
-            chunk = 'eval -client ' + kak._client + " '\n" + single_quote_escape(chunk) + "\n'"
+            chunk = u'eval -client ' + kak._client + u" '\n" + single_quote_escape(chunk) + u"\n'"
+
+        assert isinstance(chunk, six.string_types)
+        # print(chunk)
 
         if not kak._channel:
             raise ValueError('Need a channel to kak')
@@ -339,22 +456,18 @@ class Kak(object):
                 raise ValueError('Cannot pipe to kak without session details')
             p = Popen(['kak','-p',str(kak._session)], stdin=PIPE)
             debug('piping chunk', chunk)
-            p.communicate(chunk)
+            p.communicate(encode(chunk))
             p.wait()
             debug('waiting finished')
         else:
             debug('writing to ', kak._channel)
             debug('sending chunk:', chunk)
-            with open(kak._channel, 'w') as f:
-                f.write(chunk)
+            with open(kak._channel, 'wb') as f:
+                f.write(encode(chunk))
             debug('writing done ', kak._channel)
 
         kak._messages=[]
         kak._channel=None
-
-
-    def to_client(kak, client):
-        kak.client = client
 
 
     def _mkfifo(kak):
@@ -432,43 +545,54 @@ class Kak(object):
     def _setup_query(kak, queries, extra_manager=None, reentrant=False):
 
         from_kak = kak._mkfifo()
-        to_kak = kak._mkfifo()
-
-        single_query = len(queries) == 1
 
         with nest(extra_manager, kak.sh):
             qvars = []
 
             debug('queries:', queries)
-            if single_query:
-                qvars.append('${'+queries[0].variable+'}')
-            else:
-                for i, q in enumerate(queries):
-                    qvar = "__kak_q"+str(i)
-                    kak.send(qvar+'=${'+q.variable+'//_/_u}')
-                    qvars.append('${'+qvar+'}')
-            kak.send('echo', '-n', '"' + '_s'.join(qvars) + '"', '>', from_kak)
-            kak.send('cat', to_kak)
-            kak.send('rm', to_kak)
+            for i, q in enumerate(queries):
+                qvar = "__kak_q"+str(i)
+                kak.send(qvar+'=${'+q.variable_for_sh()+'//_/_u}')
+                kak.send(qvar+'=${'+qvar+'//\n/_n}')
+                qvars.append('${'+qvar+'}')
+
+            kak.send('reply_dir=$(mktemp -d)')
+            kak.send('reply_fifo=$reply_dir/fifo')
+            kak.send('mkfifo $reply_fifo')
+            qvars.append('${reply_fifo//_/_u}')
+
+            kak.send('echo', '-n', '"' + '_s'.join(qvars) + '_S"', '>', from_kak)
+
+            kak.send('cat ${reply_fifo}')
+            kak.send('rm ${reply_fifo}')
+            kak.send('rmdir ${reply_dir}')
             if not reentrant:
                 kak.send('rm', from_kak)
 
         def handle():
             debug('waiting for kak to reply on', from_kak)
             kak._main._ears[from_kak] = ()
-            with open(from_kak, 'r') as f:
-                response = f.read()
-            debug('Got response: ' + response)
-            if response == '_q':
+            with open(from_kak, 'rb') as f:
+                responses = decode(f.read())
+            debug('Got response: ' + responses)
+            if u'_q' in responses:
                 raise RuntimeError('Quit has been called')
             del kak._main._ears[from_kak]
-            if single_query:
-                answers = (queries[0].parse(response), )
-            else:
-                answers = tuple(q.parse(ans.replace('_u', '_'))
-                                for ans, q in zip(response.split('_s'), queries))
 
-            return to_kak, answers
+            all_answers = []
+            for response_line in responses.split(u'_S'):
+                if response_line:
+                    raw = [ans.replace(u'_n', u'\n').replace(u'_u', u'_')
+                           for ans in response_line.split(u'_s')]
+                    to_kak = raw.pop()
+                    debug(to_kak, repr(raw))
+                    answers = tuple(q.parse(ans) for ans, q in zip(raw, queries))
+                    all_answers.append((to_kak, answers))
+
+            if reentrant:
+                return all_answers
+            else:
+                return all_answers[0]
 
         return handle
 
@@ -522,20 +646,25 @@ class Kak(object):
                                   extra_manager=extra_manager,
                                   reentrant=True)
         @kak._fork()
-        def dispatcher(dispatch_ctx):
+        def dispatcher(ctx):
             while True:
                 try:
                     debug('dispatching listen')
-                    to_kak, answers = handle()
-                    debug('dispatching received', to_kak, answers)
+                    all_answers = handle()
+                    debug('dispatching received', repr(all_answers))
                 except RuntimeError:
                     return
-                @kak._fork()
-                def handle_one(ctx):
+                if len(all_answers) > 1:
+                    debug('with backlog:', len(all_answers))
+                for to_kak, answers in all_answers:
                     debug('handling one', to_kak)
                     ctx._channel = to_kak
                     f(ctx, *answers)
                     ctx._flush()
+
+
+    def sync(kak):
+        kak._ask([], allow_noop=False)
 
 
     def hook(kak, scope, hook_name, filter='.*', group=None):
@@ -550,19 +679,20 @@ class Kak(object):
         >>> kak = libkak.headless()
         >>> @kak.hook('global', 'InsertChar')
         ... def insert_ascii(ctx, char):
-        ...     ctx.execute(Flag('no-hooks', True), ':', str(ord(char)), '<space>')
-        >>> kak.execute('iKak<esc>%')
-        >>> kak.val.selection()
-        'K:75 a:97 k:107 \\n'
+        ...     hex = format(ord(char), '02X')
+        ...     ctx.execute(Flag('no-hooks', True), ':', hex, '|')
+        >>> kak.execute('iRace<space>condition<esc>Gh')
+        >>> print(kak.val.selection())
+        R:52|a:61|c:63|e:65| :20|c:63|o:6F|n:6E|d:64|i:69|t:74|i:69|o:6F|n:6E|
         >>> kak.execute('di')
         >>> insert_ascii(kak, 'A')
-        >>> kak.execute('<esc>%')
-        >>> kak.val.selection()
-        ':65 \\n'
+        >>> kak.execute('<esc>Gh')
+        >>> print(kak.val.selection())
+        :41|
         >>> kak.quit()
         """
         def decorate(f):
-            queries = [Query(kak, 'kak_hook_param', str)]
+            queries = [Query(kak, 'hook_param', str)]
 
             flag = '-group ' + group if group else ''
             kak.send('hook', flag, scope, hook_name, repr(filter), "'")
@@ -595,9 +725,9 @@ class Kak(object):
         >>> kak.evaluate('write_position')
         >>> kak.execute('a,<space><esc>')
         >>> write_position(kak)
-        >>> kak.execute('%')
-        >>> kak.val.selection()
-        '1:1, 1:5\\n'
+        >>> kak.execute('xH')
+        >>> print(kak.val.selection())
+        1:1, 1:5
         >>> kak.quit()
         """
         def decorate(f):
@@ -608,7 +738,7 @@ class Kak(object):
             if n_as < n_qs:
                 raise ValueError('Cannot have a default value for the new context.')
 
-            queries = [Query(kak, str(1+i), str) for i in range(0, n_as - n_qs)]
+            queries = [Query(kak, 1+i, str) for i in range(0, n_as - n_qs)]
             queries.extend(defaults)
 
             flags=['-params ' + str(n_as - n_qs)]
@@ -619,7 +749,7 @@ class Kak(object):
             if f.__doc__:
                 flags.append('-docstring ' + repr(f.__doc__))
 
-            kak.send('def', ' '.join(flags), f.__name__, "'")
+            kak.send('def', join(flags), f.__name__, "'")
             kak._reentrant_query(f, queries, extra_manager=kak.end_quote)
 
             @wraps(f)
@@ -647,7 +777,7 @@ class Kak(object):
         """
         kak.send('on-key', "'")
         manager = modify_manager(kak.end_quote, post=before_blocking)
-        return kak._ask([Query(kak, "kak_key", str)] + questions, extra_manager=manager)
+        return kak._ask([Query(kak, "key", str)] + questions, extra_manager=manager)
 
 
     def prompt(kak, message='', questions=[], init=None, before_blocking=None):
@@ -668,7 +798,7 @@ class Kak(object):
         flag = '-init ' + init if init else ''
         kak.send('prompt', flag, repr(message), "'")
         manager = modify_manager(kak.end_quote, post=before_blocking)
-        return kak._ask([Query(kak, "kak_text", str)] + questions, extra_manager=manager)
+        return kak._ask([Query(kak, "text", str)] + questions, extra_manager=manager)
 
 
 def _query_test():
@@ -681,6 +811,7 @@ def _query_test():
     True
     >>> kak.quit()
     """
+    pass
 
 
 def _cmd_test():
@@ -705,6 +836,39 @@ def _cmd_test():
     <BLANKLINE>
     >>> kak.quit()
     """
+    pass
+
+
+def _unicode_test():
+    u"""
+    >>> kak = libkak.headless()
+    >>> kak.execute(u"iåäö<esc>Gh")
+    >>> print(kak.val.selection())
+    åäö
+    >>> kak.quit()
+
+    >>> kak = libkak.unconnected()
+    >>> kak.execute(u"iåäö<esc>")
+    >>> print(kak.debug_sent())
+    exec  'iåäö<esc>'
+    """
+    pass
+
+
+def _newline_test():
+    """
+    >>> kak = libkak.headless()
+    >>> kak.execute("3o<c-r>#<esc>%")
+    >>> print(kak.val.selection())
+    <BLANKLINE>
+    1
+    2
+    3
+    <BLANKLINE>
+    >>> kak.quit()
+    """
+    pass
+
 
 
 if __name__ == '__main__':
