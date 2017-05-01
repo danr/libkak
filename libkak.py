@@ -9,16 +9,21 @@ from subprocess import Popen, PIPE
 from contextlib import contextmanager
 from collections import namedtuple
 from threading import Thread
+import itertools as it
 import threading
 import time
 import shutil
 import six
+import re
+import tempfile
+
 
 def join(words, sep=u' '):
     """
     Join strings or bytes into a string.
     """
     return decode(sep).join(decode(w) for w in words)
+
 
 def encode(s):
     """
@@ -46,7 +51,7 @@ def decode(s):
 
 def debug(*ws):
     return
-    print(threading.current_thread().name, *ws)
+    print(threading.current_thread().name, *ws, file=sys.stderr)
 
 
 def headless():
@@ -109,12 +114,11 @@ def nest(*managers):
     else:
         yield ()
 
-
 def single_quote_escape(string):
     """
     Backslash-escape ' and \.
     """
-    return string.replace(u'\\', u'\\\\').replace(u"'", u"\\'")
+    return string.replace(u"\\'", u"\\\\'").replace(u"'", u"\\'")
 
 
 def single_quoted(string):
@@ -191,24 +195,52 @@ class Query(namedtuple('Query', ['kak', 'variable', 'parse'])):
         else:
             return "kak_" + self.variable
 
-    @staticmethod
-    def parse_intlist(s):
-        return [ int(x) for x in s.split(':') ]
 
-    @staticmethod
-    def parse_strlist(s):
-        return [ x.replace('\:', ':') for x in s.split(':') ]
+def lines(s):
+    out = ['']
+    for c in s:
+        if c == '\n':
+            out.append('')
+        else:
+            out[-1] = out[-1]+c
+    return out
 
 
-"""
->>> for n in range(100):
-...     s = ''.join(random.choice([chr(10), chr(92), ':', '_', 's', 'u'])
-...                                for _ in range(n))
-...     kak = libkak.headless()
-...     # set buffer to s
-...     # pick random positions in s, and set selections to that
-...     # check that querying selections give the right results from s
-"""
+def _test_selections(fragments, stride=1):
+    r"""
+    >>> import random
+    >>> def random_fragment():
+    ...     return ''.join(random.choice(['\n', '\\', ':', '_', 's', 'u'])
+    ...                    for _ in range(2, 6))
+    >>> for n in range(100):
+    ...     _test_selections(random_fragment() for _ in range(n))
+    """
+    descs = []
+    buf = ""
+    fragments = list(fragments)
+    for s in fragments:
+        p0 = len(lines(buf)), len(lines(buf)[-1])+1
+        buf += s
+        p1 = len(lines(buf)), len(lines(buf)[-1])
+        y, x = p1
+        if x == 0:
+            p1 = y-1, len(lines(buf)[-1])+1
+
+        print(repr(s), p0, p1)
+        descs += [(p0, p1)]
+    kak = headless()
+    with tempfile.NamedTemporaryFile('wb') as f:
+        f.write(encode(buf))
+        f.flush()
+        kak.evaluate('edit ' + f.name)
+        kak.select(descs[::stride])
+        have = kak.val.selections()
+        want = [w for w in fragments[::stride]]
+        print('have, want: ')
+        print(have)
+        print(want)
+        print(have == want)
+        kak.quit()
 
 
 class val(object):
@@ -223,7 +255,14 @@ class val(object):
             return x
 
         def listof(p):
-            return lambda xs: [p(x) for x in xs.split(':')]
+            def inner(s):
+                debug(s)
+                m = list(re.split(r'(?<!\\)(\\\\)*:', s))
+                ms = [x+(y or '') for x, y in zip(m[::2], (m+[''])[1::2])]
+                debug(ms)
+                return [p(x.replace('\\\\', '\\').replace('\\:', ':'))
+                        for x in ms]
+            return inner
 
         self.bufname=Query(kak, 'bufname', string)
         self.buffile=Query(kak, 'buffile', string)
@@ -306,6 +345,10 @@ class Kak(object):
         kak.send("exec", show_flags(flags), single_quoted(join(keys, sep='')))
 
 
+    def remove_hooks(kak, scope, group):
+        kak.send("remove-hooks", scope, group)
+
+
     def evaluate(kak, *cmds_and_flags):
         """
         eval
@@ -333,12 +376,21 @@ class Kak(object):
         kak.send("echo", show_flags(flags), single_quoted(join(text)))
 
 
-    def set_option(kak, scope, option, value, add=False):
-        raise NotImplemented
-
-
-    def set_register(kak, reg, value):
-        raise NotImplemented
+    def select(kak, cursors):
+        r"""
+        >>> kak = libkak.headless()
+        >>> kak.execute('iabcdef<ret>ghijkl<esc>')
+        >>> kak.select([((1, 4), (1, 1)), ((1, 6), (2, 3))])
+        >>> kak.val.selections()
+        ['abcd', 'f\nghi']
+        >>> kak.execute('Z', ';')
+        >>> kak.val.selections()
+        ['a', 'i']
+        >>> kak.quit()
+        """
+        if len(cursors) >= 1:
+            s = ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos)) for pos in cursors)
+            kak.send('select', s)
 
 
     def quit(kak, force=True):
@@ -445,7 +497,7 @@ class Kak(object):
             chunk = u'eval -client ' + kak._client + u" '\n" + single_quote_escape(chunk) + u"\n'"
 
         assert isinstance(chunk, six.string_types)
-        # print(chunk)
+        #print(chunk)
 
         if not kak._channel:
             raise ValueError('Need a channel to kak')
@@ -462,7 +514,7 @@ class Kak(object):
             debug('waiting finished')
         else:
             debug('writing to ', kak._channel)
-            debug('sending chunk:', chunk)
+            debug('sending chunk:\n', chunk)
             with open(kak._channel, 'wb') as f:
                 f.write(encode(chunk))
             debug('writing done ', kak._channel)
@@ -474,13 +526,15 @@ class Kak(object):
     def _mkfifo(kak):
         kak._counter += 1
         name = kak._dir + '/' + str(kak._counter)
+        print('name:', name)
         os.mkfifo(name)
         return name
 
 
     def _duplicate(kak):
         new_kak = Kak(channel=None, session=kak._session, client=kak._client)
-        new_kak._main   = kak._main
+        new_kak._main = kak._main
+        new_kak._dir = tempfile.mkdtemp()
         return new_kak
 
 
@@ -515,7 +569,7 @@ class Kak(object):
 
     @contextmanager
     def end_quote(kak):
-        """
+        r"""
         Context manager for escaping ' and ending with a '.
 
         >>> kak = libkak.unconnected()
@@ -524,7 +578,7 @@ class Kak(object):
         ...     kak.send("exec <a-k>\w'<ret>")
         >>> print(kak.debug_sent())
         try '
-          exec <a-k>\\\\w\\'<ret>
+          exec <a-k>\w\'<ret>
         '
         """
         with kak._local(single_quote_escape):
@@ -546,6 +600,9 @@ class Kak(object):
     def _setup_query(kak, queries, extra_manager=None, reentrant=False):
 
         from_kak = kak._mkfifo()
+
+        # todo: put a try %{ ... } around all messages so far,
+        # and make python throw an error if there is one
 
         with nest(extra_manager, kak.sh):
             qvars = []
@@ -646,9 +703,10 @@ class Kak(object):
                 except RuntimeError:
                     return
                 debug('handling one', to_kak)
-                ctx._channel = to_kak
-                f(ctx, *answers)
-                ctx._flush()
+                @ctx._fork()
+                def handle_one(ictx):
+                    ictx._channel = to_kak
+                    f(ictx, *answers)
 
 
     def sync(kak):
@@ -683,7 +741,7 @@ class Kak(object):
             queries = [Query(kak, 'hook_param', str)]
 
             flag = '-group ' + group if group else ''
-            kak.send('hook', flag, scope, hook_name, repr(filter), "'")
+            kak.send('hook', flag, scope, hook_name, single_quoted(filter), "'")
             kak._reentrant_query(f, queries, extra_manager=kak.end_quote)
 
             @wraps(f)
@@ -859,9 +917,32 @@ def _newline_test():
 
 
 
+def __z_test():
+    """
+    >>> kak = libkak.headless()
+    >>> kak.execute('Zz')
+    >>> kak.sync()
+    >>> kak.quit()
+    """
+
+
 if __name__ == '__main__':
+    try:
+        import random
+        def random_fragment():
+            return ''.join(random.choice(['\n', '\\', ':', '_', 's', 'u'])
+                           for _ in range(2, 6))
+        for n in range(1, 10):
+            inp = [random_fragment() for _ in range(n)]
+            debug(inp)
+            _test_selections(inp)
+    except Exception as e:
+        import pdb
+        pdb.post_mortem(e.__traceback__)
+
     import doctest
     import sys
+    sys.exit()
     doctest.testmod(extraglobs={'libkak': sys.modules[__name__]})
     sys.exit()
     dt_runner = doctest.DebugRunner()
