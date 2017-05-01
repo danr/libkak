@@ -9,10 +9,12 @@ import libkak
 import os
 import tempfile
 from multiprocessing import Queue
+from collections import defaultdict
 
 
 # mighty global of callbacks
 cbs = {}
+diagnostics = defaultdict(list)
 
 
 def esc(cs,s):
@@ -41,6 +43,10 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
     @type kak: libkak.Kak
     """
     kak.remove_hooks('global', 'lsp')
+    kak.send('try %{declare-option -hidden completions lsp_completions}')
+    kak.send('set-option -add global completers option=lsp_completions')
+    kak.send('try %{declare-option -hidden line-flags lsp_flags}')
+    kak.send('try %{add-highlighter flag_lines default lsp_flags}')
     lsp=Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
     def call(method, params, cb=None):
         msg = craft(method, params, cb)
@@ -111,7 +117,7 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                         '|'.join(esc('|:', x) for x in
                             (item['label'],
                              '{}\n\n{}'.format(item['detail'], item['documentation']),
-                             '{} [{}]'.format(item['label'], item['kind'])))
+                             '{} [{}]'.format(item['label'], item.get('kind', '?'))))
                         for item in result['items']
                     )
                     compl = '{}.{}@{}:{}'.format(
@@ -120,7 +126,7 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                     print(compl)
                     print(ctx.val.timestamp())
                     ctx.sync()
-                    ctx.opt.lsc_completions = compl
+                    ctx.opt.lsp_completions = compl
                     ctx.release()
 
         except KeyError:
@@ -129,6 +135,15 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
 
         @kak.hook('global', 'NormalIdle', group='lsp')
         def _(ctx, _):
+            # diagnostics
+            if ctx.val.timestamp() == diagnostics['ts']:
+                line = ctx.val.cursor_line()
+                if diagnostics[line]:
+                    for d in diagnostics[line]:
+                        ctx.info(d['message'],
+                                 libkak.Flag('placement', 'above'),
+                                 libkak.Flag('anchor', '{}.{}'.format(line, d['col'])))
+
             @handler(ctx, 'textDocument/hover', lambda d: {
                 'textDocument': {'uri': d['uri']},
                 'position': d['pos']
@@ -144,12 +159,65 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                 ctx.info(label, libkak.Flag('placement', 'above'), libkak.Flag('anchor', '{}.{}'.format(pos['line']+1, pos['character']+1)))
                 ctx.release()
 
+        @kak.cmd(hidden=False)
+        def lsp_references(ctx):
+            @handler(ctx, 'textDocument/references', lambda d: {
+                'textDocument': {'uri': d['uri']},
+                'position': d['pos'],
+                'includeDeclaration': True
+                })
+            def _result(result, d):
+                c = []
+                other = 0
+                for loc in result:
+                    if loc['uri'] == d['uri']:
+                        line0 = int(loc['range']['start']['line']) + 1
+                        col0  = int(loc['range']['start']['character']) + 1
+                        line1 = int(loc['range']['end']['line']) + 1
+                        col1  = int(loc['range']['end']['character'])
+                        c.append(((line0, col0), (line1, col1)))
+                    else:
+                        other += 1
+                ctx.select(c)
+                if other:
+                    ctx.echo('Also at {} positions in other files'.format(other))
+                ctx.release()
+
+
+        @kak.cmd(hidden=False)
+        def lsp_goto_definition(ctx):
+            @handler(ctx, 'textDocument/definition', lambda d: {
+                'textDocument': {'uri': d['uri']},
+                'position': d['pos'],
+                })
+            def _result(result, d):
+
+                if 'uri' in result:
+                    result = [result]
+
+                c = []
+                for loc in result:
+                    line0 = int(loc['range']['start']['line']) + 1
+                    col0  = int(loc['range']['start']['character']) + 1
+                    line1 = int(loc['range']['end']['line']) + 1
+                    col1  = int(loc['range']['end']['character'])
+                    c.append((loc['uri'], (line0, col0), (line1, col1)))
+
+                sel = ctx.menu(u'{}:{}'.format(uri, line0) for (uri, (line0, _), _) in c)
+                (uri, p0, p1) = c[sel]
+                if uri.startswith('file://'):
+                    uri = uri[len('file://'):]
+                    ctx.send('edit', uri)
+                    ctx.select([(p0, p1)])
+                else:
+                    ctx.echo(libkak.Flag('color', 'red'), "Cannot open {}".format(uri))
+                ctx.release()
+
+
         kak.release()
 
 
     pwd = kak.env.PWD()
-    kak.send('declare-option -hidden completions lsc_completions')
-    kak.send('set-option -add completers option=lsc_completions')
     kak.release()
     rootUri = 'file://' + pwd
     call('initialize', {
@@ -186,6 +254,30 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                     del cbs[msg['id']]
                     print(cb.__name__)
                     cb(msg['result'])
+            if 'method' in msg and msg['method'] == 'textDocument/publishDiagnostics':
+                msg = msg['params']
+                if msg['uri'] == 'file://' + kak.val.buffile():
+                    ts = kak.val.timestamp()
+                    diagnostics.clear()
+                    diagnostics['ts'] = ts
+                    flags = [str(ts), '1|   ']
+                    from_severity = ['',
+                        '{red+b}>> ',
+                        '{orange+b}>> ',
+                        '{blue}>> ',
+                        '{green}>> '
+                        ]
+                    for diag in msg['diagnostics']:
+                        line0 = int(diag['range']['start']['line']) + 1
+                        col0  = int(diag['range']['start']['character']) + 1
+                        flags.append(str(line0) + '|' + from_severity[diag['severity']])
+                        diagnostics[line0].append({
+                            'col': col0,
+                            'message': diag['message']
+                            })
+                    kak.opt.lsp_flags = ':'.join(flags)
+                    kak.release()
+
             #except Exception as e:
                 #msg = "Error handling message: " + content
                 #msg += '\n' + str(e)

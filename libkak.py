@@ -50,7 +50,7 @@ def decode(s):
 
 
 def debug(*ws):
-    #return
+    return
     print(threading.current_thread().name, *ws, file=sys.stderr)
 
 
@@ -497,7 +497,7 @@ class Kak(object):
             chunk = u'eval -client ' + kak._client + u" '\n" + single_quote_escape(chunk) + u"\n'"
 
         assert isinstance(chunk, six.string_types)
-        #print(chunk)
+        print(chunk)
 
         if not kak._channel:
             raise ValueError('Need a channel to kak')
@@ -845,6 +845,41 @@ class Kak(object):
         kak.send('prompt', flag, repr(message), "'")
         manager = modify_manager(kak.end_quote, post=before_blocking)
         return kak._ask([Query(kak, "text", str)] + questions, extra_manager=manager)
+
+
+    def menu(kak, names, auto_single=True, before_blocking=None):
+        """
+        Ask for something in a menu.
+
+        Set the before_blocking callback if you want to do something before
+        listening for the key (example: test this function).
+
+        >>> kak = libkak.headless()
+        >>> kak.menu(['test1', 'test2'],
+        ...          before_blocking=lambda: kak.execute('<ret>'))
+        0
+        >>> kak.menu(['test1', 'test2'],
+        ...          before_blocking=lambda: kak.execute('<down><ret>'))
+        1
+        >>> kak.menu(['test_one'])
+        0
+        >>> kak.quit()
+        """
+        f = kak._mkfifo()
+        args = ['menu']
+        if auto_single:
+            args.append('-auto-single')
+        for i, n in enumerate(names):
+            args.append(single_quoted(n))
+            args.append("%sh'echo {} > {}'".format(i, f))
+        kak.send(*args)
+        if before_blocking:
+            before_blocking()
+        kak.release()
+        with open(f, 'r') as fp:
+            i = int(fp.readline())
+            kak.sync()
+        return i
 
 
 def _query_test():
