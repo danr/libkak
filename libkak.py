@@ -531,7 +531,6 @@ class Kak(object):
     def _mkfifo(kak):
         kak._counter += 1
         name = kak._dir + '/' + str(kak._counter)
-        print('name:', name)
         os.mkfifo(name)
         return name
 
@@ -798,7 +797,7 @@ class Kak(object):
             if allow_override:
                 flags.append('-allow-override')
             if f.__doc__:
-                flags.append('-docstring ' + repr(f.__doc__))
+                flags.append('-docstring ' + single_quoted('\n'.join(l.strip() for l in f.__doc__.split('\n'))))
 
             kak.send('def', join(flags), f.__name__, "'")
             kak._reentrant_query(f, queries, extra_manager=kak.end_quote)
