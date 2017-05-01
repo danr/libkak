@@ -50,7 +50,7 @@ def decode(s):
 
 
 def debug(*ws):
-    return
+    #return
     print(threading.current_thread().name, *ws, file=sys.stderr)
 
 
@@ -329,7 +329,7 @@ class dynamic(object):
         if '_ready' not in self.__dict__:
             self.__dict__[name] = value
         elif self._assign_cmd:
-            self._kak.send(self._assign_cmd, name, value)
+            self._kak.send(self._assign_cmd, name, single_quoted(value))
         else:
             raise RuntimeError('Cannot assign to ' + self._prefix)
 
@@ -438,7 +438,7 @@ class Kak(object):
         kak._counter  = 0
         kak._send     = lambda words: kak._messages.append(join(words))
         kak.val       = val(kak)
-        kak.opt       = dynamic(kak, 'opt', 'set-option current')
+        kak.opt       = dynamic(kak, 'opt', 'set-option buffer')
         kak.env       = dynamic(kak, 'client_env', '')
         kak.reg       = dynamic(kak, 'reg', 'set-register')
         if channel is 'unconnected':
