@@ -329,9 +329,14 @@ class dynamic(object):
         if '_ready' not in self.__dict__:
             self.__dict__[name] = value
         elif self._assign_cmd:
-            self._kak.send(self._assign_cmd, name, single_quoted(value))
+            self.assign(name, value)
         else:
             raise RuntimeError('Cannot assign to ' + self._prefix)
+
+    def assign(self, name, value, cmd=None):
+        if not cmd:
+            cmd = self._assign_cmd
+        self._kak.send(cmd, name, single_quoted(value))
 
 
 class Kak(object):

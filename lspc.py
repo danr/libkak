@@ -15,6 +15,7 @@ from collections import defaultdict
 # mighty global of callbacks
 cbs = {}
 diagnostics = defaultdict(list)
+opened = set()
 
 
 def esc(cs,s):
@@ -38,13 +39,13 @@ def craft(method, params, cb=None, _private={'n':0}):
     return u"Content-Length: {0}\r\n\r\n{1}".format(len(payload), payload).encode('utf-8')
 
 
-def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib/language-server-stdio.js']):
+def main(kak, cmd):
     """
     @type kak: libkak.Kak
     """
     kak.remove_hooks('global', 'lsp')
-    kak.send('try %{declare-option -hidden completions lsp_completions}')
-    kak.send('set-option -add global completers option=lsp_completions')
+    kak.send('try %{declare-option completions lsp_completions}')
+    kak.send('set-option global completers option=lsp_completions')
     kak.send('try %{declare-option -hidden line-flags lsp_flags}')
     kak.send('try %{add-highlighter flag_lines default lsp_flags}')
     lsp=Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
@@ -59,18 +60,29 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
         """
         @type ctx: libkak.Kak
         """
-        line, column, buffile, ts = ctx.ask(ctx.val.cursor_line, ctx.val.cursor_column, ctx.val.buffile, ctx.val.timestamp)
+        line, column, buffile, ts, ft = ctx.ask(ctx.val.cursor_line, ctx.val.cursor_column, ctx.val.buffile, ctx.val.timestamp, ctx.opt.filetype)
         with tempfile.NamedTemporaryFile() as tmp:
-            ctx.evaluate('write ' + tmp.name)
+            ctx.evaluate('write ' + tmp.name, libkak.Flag('no-hooks'))
             ctx.sync()
             contents = libkak.decode(open(tmp.name, 'r').read())
             ctx.release()
         pos = {'line': line-1, 'character': column-1}
         uri = 'file://' + buffile
-        call('textDocument/didChange', {
-            'textDocument': {'uri': uri, 'version': ts},
-            'contentChanges': [{'text': contents}]
-            })
+        if uri in opened:
+            call('textDocument/didChange', {
+                'textDocument': {'uri': uri, 'version': ts},
+                'contentChanges': [{'text': contents}]
+                })
+        else:
+            call('textDocument/didOpen', {
+                'textDocument': {
+                    'uri': uri,
+                    'version': ts,
+                    'languageId': ft,
+                    'text': contents
+                    },
+                })
+            opened.add(uri)
         d = locals()
         q = Queue()
         print('locals:', d)
@@ -105,8 +117,8 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
         try:
             compl_chars = result['capabilities']['completionProvider']['triggerCharacters']
             filter = u'[' + u''.join(compl_chars) + u']'
-            @kak.hook('global', 'InsertChar', filter, group='lsp')
-            def _(ctx, _char):
+
+            def lsp_complete(ctx):
                 @handler(ctx, 'textDocument/completion', lambda d: {
                     'textDocument': {'uri': d['uri']},
                     'position': d['pos']
@@ -123,11 +135,12 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                     compl = '{}.{}@{}:{}'.format(
                         pos['line']+1, pos['character']+1, d['ts'],
                         ':'.join(cs))
-                    print(compl)
-                    print(ctx.val.timestamp())
                     ctx.sync()
-                    ctx.opt.lsp_completions = compl
+                    ctx.opt.assign('lsp_completions', compl, 'set buffer')
                     ctx.release()
+
+            kak.hook('global', 'InsertChar', filter, group='lsp')(lambda ctx, _char: lsp_complete(ctx))
+            kak.cmd(hidden=False)(lsp_complete)
 
         except KeyError:
             pass
@@ -150,10 +163,19 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                 })
             def _result(result, d):
                 pos = d['pos']
-                try:
-                    label = result['contents'][0]['value']
-                except:
+                label = []
+                if not result:
                     return
+                contents = result['contents']
+                if not isinstance(contents, list):
+                    contents = [contents]
+                for content in contents:
+                    if isinstance(content, dict) and 'value' in content:
+                        label.append(content['value'])
+                    else:
+                        # a string
+                        label.append(content)
+                label = '\n\n'.join(label)
                 print(str(result))
                 print(ctx.val.client())
                 ctx.info(label, libkak.Flag('placement', 'above'), libkak.Flag('anchor', '{}.{}'.format(pos['line']+1, pos['character']+1)))
@@ -223,6 +245,7 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
     call('initialize', {
         'processId': os.getpid(),
         'rootUri': rootUri,
+        'rootPath': pwd,
         'capabilities': {}
         }, initialized)
 
@@ -263,14 +286,14 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
                     flags = [str(ts), '1|   ']
                     from_severity = ['',
                         '{red+b}>> ',
-                        '{orange+b}>> ',
+                        '{yellow+b}>> ',
                         '{blue}>> ',
                         '{green}>> '
                         ]
                     for diag in msg['diagnostics']:
                         line0 = int(diag['range']['start']['line']) + 1
                         col0  = int(diag['range']['start']['character']) + 1
-                        flags.append(str(line0) + '|' + from_severity[diag['severity']])
+                        flags.append(str(line0) + '|' + from_severity[diag.get('severity',1)])
                         diagnostics[line0].append({
                             'col': col0,
                             'message': diag['message']
@@ -290,4 +313,8 @@ def main(kak, cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib
 
 
 if __name__ == '__main__':
-    main(libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0'))
+    main(libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0'),
+        #cmd=['pyls']
+        #cmd=['/home/dan/go/bin/go-langserver']
+        cmd=['node', '/home/dan/build/javascript-typescript-langserver/lib/language-server-stdio.js'
+    )
