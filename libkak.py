@@ -49,15 +49,10 @@ def decode(s):
         raise ValueError('Expected string or bytes')
 
 
-def debug(*ws):
-    return
-    print(threading.current_thread().name, *ws, file=sys.stderr)
-
-
-def headless():
+def headless(debug=False):
     proc = Popen(['kak','-n','-ui','dummy'])
     time.sleep(0.01)
-    kak = Kak('pipe', proc.pid, 'unnamed0')
+    kak = Kak('pipe', proc.pid, 'unnamed0', debug=debug)
     kak.sync()
     return kak
 
@@ -210,9 +205,9 @@ def _test_selections(fragments, stride=1):
     r"""
     >>> import random
     >>> def random_fragment():
-    ...     return ''.join(random.choice(['\n', '\\', ':', '_', 's', 'u'])
-    ...                    for _ in range(2, 6))
-    >>> for n in range(100):
+    ...     return ''.join(random.choice(':_su\'')
+    ...                    for _ in range(0, 6))
+    >>> for n in range(1, 20):
     ...     _test_selections(random_fragment() for _ in range(n))
     """
     descs = []
@@ -226,7 +221,7 @@ def _test_selections(fragments, stride=1):
         if x == 0:
             p1 = y-1, len(lines(buf)[-1])+1
 
-        print(repr(s), p0, p1)
+        #print(repr(s), p0, p1)
         descs += [(p0, p1)]
     kak = headless()
     with tempfile.NamedTemporaryFile('wb') as f:
@@ -236,10 +231,13 @@ def _test_selections(fragments, stride=1):
         kak.select(descs[::stride])
         have = kak.val.selections()
         want = [w for w in fragments[::stride]]
-        print('have, want: ')
-        print(have)
-        print(want)
-        print(have == want)
+        if have != want:
+            print('have, want: ')
+            print(have)
+            print(want)
+            from pprint import pprint
+            pprint(list(zip(have, want)))
+            print(have == want)
         kak.quit()
 
 
@@ -256,10 +254,10 @@ class val(object):
 
         def listof(p):
             def inner(s):
-                debug(s)
+                kak.debug(s)
                 m = list(re.split(r'(?<!\\)(\\\\)*:', s))
                 ms = [x+(y or '') for x, y in zip(m[::2], (m+[''])[1::2])]
-                debug(ms)
+                kak.debug(ms)
                 return [p(x.replace('\\\\', '\\').replace('\\:', ':'))
                         for x in ms]
             return inner
@@ -386,11 +384,12 @@ class Kak(object):
         >>> kak = libkak.headless()
         >>> kak.execute('iabcdef<ret>ghijkl<esc>')
         >>> kak.select([((1, 4), (1, 1)), ((1, 6), (2, 3))])
-        >>> kak.val.selections()
-        ['abcd', 'f\nghi']
+        >>> print(':'.join(kak.val.selections()))
+        abcd:f
+        ghi
         >>> kak.execute('Z', ';')
-        >>> kak.val.selections()
-        ['a', 'i']
+        >>> print(':'.join(kak.val.selections()))
+        a:i
         >>> kak.quit()
         """
         if len(cursors) >= 1:
@@ -427,7 +426,7 @@ class Kak(object):
     # try..catch..
     # highlighters?
 
-    def __init__(kak, channel='stdout', session=None, client=None):
+    def __init__(kak, channel='stdout', session=None, client=None, debug=False):
         """
         Initialize a Kak object.
 
@@ -442,6 +441,7 @@ class Kak(object):
         kak._main     = kak
         kak._counter  = 0
         kak._send     = lambda words: kak._messages.append(join(words))
+        kak._debug    = debug
         kak.val       = val(kak)
         kak.opt       = dynamic(kak, 'opt', 'set-option buffer')
         kak.env       = dynamic(kak, 'client_env', '')
@@ -453,6 +453,10 @@ class Kak(object):
             kak._dir = tempfile.mkdtemp()
 
 
+    def debug(kak, *ws):
+        if kak._debug:
+            print(threading.current_thread().name, *ws, file=sys.stderr)
+
 
     def send(kak, *words):
         """
@@ -460,7 +464,7 @@ class Kak(object):
 
         This is buffered and all messages are transmitted in one go.
         """
-        debug('Sending: ', words)
+        kak.debug('Sending: ', words)
         kak._send(words)
 
 
@@ -476,11 +480,11 @@ class Kak(object):
         Release control over kak and continue asynchronously.
         """
         if not kak._session:
-            debug('getting session&client')
+            kak.debug('getting session&client')
             kak._session, kak._client = kak.ask(kak.val.session, kak.val.client)
-        debug('releasing')
+        kak.debug('releasing')
         kak._flush()
-        debug('channel is now pipe')
+        kak.debug('channel is now pipe')
         kak._channel = 'pipe'
 
 
@@ -502,27 +506,27 @@ class Kak(object):
             chunk = u'eval -client ' + kak._client + u" '\n" + single_quote_escape(chunk) + u"\n'"
 
         assert isinstance(chunk, six.string_types)
-        print(chunk)
+        #print(chunk)
 
         if not kak._channel:
             raise ValueError('Need a channel to kak')
         if kak._channel == 'stdout':
-            debug('stdout chunk', chunk)
+            kak.debug('stdout chunk', chunk)
             print(chunk)
         elif kak._channel == 'pipe':
             if not kak._session:
                 raise ValueError('Cannot pipe to kak without session details')
             p = Popen(['kak','-p',str(kak._session)], stdin=PIPE)
-            debug('piping chunk', chunk)
+            kak.debug('piping chunk', chunk)
             p.communicate(encode(chunk))
             p.wait()
-            debug('waiting finished')
+            kak.debug('waiting finished')
         else:
-            debug('writing to ', kak._channel)
-            debug('sending chunk:\n', chunk)
+            kak.debug('writing to ', kak._channel)
+            kak.debug('sending chunk:\n', chunk)
             with open(kak._channel, 'wb') as f:
                 f.write(encode(chunk))
-            debug('writing done ', kak._channel)
+            kak.debug('writing done ', kak._channel)
 
         kak._messages=[]
         kak._channel=None
@@ -536,7 +540,7 @@ class Kak(object):
 
 
     def _duplicate(kak):
-        new_kak = Kak(channel=None, session=kak._session, client=kak._client)
+        new_kak = Kak(channel=None, session=kak._session, client=kak._client, debug=kak._debug)
         new_kak._main = kak._main
         new_kak._dir = tempfile.mkdtemp()
         return new_kak
@@ -605,13 +609,10 @@ class Kak(object):
 
         from_kak = kak._mkfifo()
 
-        # todo: put a try %{ ... } around all messages so far,
-        # and make python throw an error if there is one
-
         with nest(extra_manager, kak.sh):
             qvars = []
 
-            debug('queries:', queries)
+            kak.debug('queries:', queries)
             for i, q in enumerate(queries):
                 qvar = "__kak_q"+str(i)
                 kak.send(qvar+'=${'+q.variable_for_sh()+'//_/_u}')
@@ -631,18 +632,18 @@ class Kak(object):
                 kak.send('rm', from_kak)
 
         def handle():
-            debug('waiting for kak to reply on', from_kak)
+            kak.debug('waiting for kak to reply on', from_kak)
             kak._main._ears[from_kak] = ()
             with open(from_kak, 'rb') as f:
                 response = decode(f.read())
-            debug('Got response: ' + response)
+            kak.debug('Got response: ' + response)
             if u'_q' in response:
                 raise RuntimeError('Quit has been called')
             del kak._main._ears[from_kak]
 
             raw = [ans.replace(u'_u', u'_') for ans in response.split(u'_s')]
             to_kak = raw.pop()
-            debug(to_kak, repr(raw))
+            kak.debug(to_kak, repr(raw))
             answers = tuple(q.parse(ans) for ans, q in zip(raw, queries))
             return to_kak, answers
 
@@ -683,7 +684,7 @@ class Kak(object):
             handle = kak._setup_query(questions, extra_manager=extra_manager)
             kak._flush()
             to_kak, answers = handle()
-            debug('yay:', to_kak, answers)
+            kak.debug('yay:', to_kak, answers)
             kak._channel = to_kak
             return answers
 
@@ -701,19 +702,24 @@ class Kak(object):
         def dispatcher(ctx):
             while True:
                 try:
-                    debug('dispatching listen')
+                    kak.debug('dispatching listen')
                     to_kak, answers = handle()
-                    debug('dispatching received', to_kak, repr(answers))
+                    kak.debug('dispatching received', to_kak, repr(answers))
                 except RuntimeError:
                     return
-                debug('handling one', to_kak)
+                kak.debug('handling one', to_kak)
                 @ctx._fork()
                 def handle_one(ictx):
                     ictx._channel = to_kak
                     f(ictx, *answers)
+                    ictx._flush()
 
 
     def sync(kak):
+        """
+        Synchronize: make sure you have control over kak.
+        Sets the client after a release.
+        """
         kak._ask([], allow_noop=False)
 
 
@@ -804,7 +810,7 @@ class Kak(object):
 
             @wraps(f)
             def call_from_python(ctx, *args):
-                debug('calling', f.__name__, 'default args:', len(defaults))
+                kak.debug('calling', f.__name__, 'default args:', len(defaults))
                 if len(args) != n_as - n_qs:
                     raise ValueError('Wrong number of arguments')
                 return f(ctx, *(args + ctx._ask(defaults, allow_noop=True)))
@@ -875,7 +881,7 @@ class Kak(object):
             args.append('-auto-single')
         for i, n in enumerate(names):
             args.append(single_quoted(n))
-            args.append("%sh'echo {} > {}'".format(i, f))
+            args.append("%(%sh(echo {} > {}))".format(i, f))
         kak.send(*args)
         if before_blocking:
             before_blocking()
@@ -906,7 +912,6 @@ def _cmd_test():
     ... def test(ctx, txt, y=kak.val.cursor_line):
     ...     ctx.execute("oTest!<space>", txt, "<space>", str(y), "<esc>")
     ...     return ctx.val.selection()
-    >>> debug('asking...')
     >>> print(test(kak, 'a'))
     1
     >>> kak.evaluate('test b')
@@ -966,29 +971,14 @@ def __z_test():
 
 
 if __name__ == '__main__':
-    try:
-        import random
-        def random_fragment():
-            return ''.join(random.choice(['\n', '\\', ':', '_', 's', 'u'])
-                           for _ in range(2, 6))
-        for n in range(1, 10):
-            inp = [random_fragment() for _ in range(n)]
-            debug(inp)
-            _test_selections(inp)
-    except Exception as e:
-        import pdb
-        pdb.post_mortem(e.__traceback__)
-
     import doctest
     import sys
-    sys.exit()
     doctest.testmod(extraglobs={'libkak': sys.modules[__name__]})
     sys.exit()
     dt_runner = doctest.DebugRunner()
     tests = doctest.DocTestFinder().find(sys.modules[__name__])
     for t in tests:
         t.globs['libkak']=sys.modules[__name__]
-        #dt_runner.run(t)
         try:
             dt_runner.run(t)
         except doctest.UnexpectedException as e:
