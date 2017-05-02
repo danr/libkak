@@ -761,7 +761,7 @@ class Kak(object):
         return decorate
 
 
-    def cmd(kak, hidden=True, allow_override=True):
+    def cmd(kak, hidden=False, allow_override=True):
         """
         Make a kakoune command (`def`/`define-command`).
 

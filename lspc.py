@@ -2,14 +2,12 @@ from __future__ import print_function
 from subprocess import Popen, PIPE
 import sys
 import json
-import uuid
-from functools import wraps
-from pprint import pprint
 import libkak
 import os
 import tempfile
 from multiprocessing import Queue
 from collections import defaultdict
+import six
 
 
 def esc(cs,s):
@@ -145,7 +143,7 @@ def main_for_filetype(kak, _spawned=set()):
 
         kak.hook('global', 'InsertEnd', group='lsp')(lambda ctx, _: lsp_sync(ctx))
         kak.hook('global', 'WinDisplay', group='lsp')(lambda ctx, _: lsp_sync(ctx))
-        kak.cmd(hidden=False)(lsp_sync)
+        kak.cmd()(lsp_sync)
 
         try:
             sig_help_chars = result['capabilities']['signatureHelpProvider']['triggerCharacters']
@@ -207,17 +205,18 @@ def main_for_filetype(kak, _spawned=set()):
                     ctx.release()
 
             kak.hook('global', 'InsertChar', filter, group='lsp')(lambda ctx, _char: lsp_complete(ctx))
-            kak.cmd(hidden=False)(lsp_complete)
+            kak.cmd()(lsp_complete)
 
         except KeyError:
             pass
 
 
-        @kak.cmd(hidden=False)
-        def lsp_diagnostics(ctx, where):
+        @kak.cmd()
+        def lsp_diagnostics(ctx, where, ts=kak.val.timestamp,
+                                        line=kak.val.cursor_line):
             """
-            Describe diagnostics for a line somewhere ('cursor', 'info'
-            or 'docsclient'.)
+            Describe diagnostics for the cursor line somewhere
+            ('cursor', 'info' or 'docsclient'.)
 
             Hook this to NormalIdle if you want:
 
@@ -225,7 +224,6 @@ def main_for_filetype(kak, _spawned=set()):
                 lsp_diagnostics cursor
             }
             """
-            ts, line = ctx.ask(ctx.val.timestamp, ctx.val.cursor_line)
             if ts == diagnostics['ts']:
                 if diagnostics[line]:
                     min_col = 98765
@@ -241,7 +239,55 @@ def main_for_filetype(kak, _spawned=set()):
             ctx.release()
 
 
-        @kak.cmd(hidden=False)
+        @kak.cmd()
+        def lsp_diagnostics_jump(ctx, direction, ts=kak.val.timestamp,
+                                                 line=kak.val.cursor_line):
+            """
+            Jump to next or prev diagnostic (relative to the main cursor line)
+
+            Example configuration:
+
+            map global user n ':lsp_diagonstics_jump next<ret>:lsp_diagnostics cursor<ret>'
+            map global user p ':lsp_diagonstics_jump prev<ret>:lsp_diagnostics cursor<ret>'
+            """
+            if ts == diagnostics['ts']:
+                next_line = None
+                first_line = None
+                last_line = None
+                for other_line in six.iterkeys(diagnostics):
+                    if other_line == 'ts':
+                        continue
+                    if other_line < first_line:
+                        first_line = other_line
+                    if other_line > last_line:
+                        last_line = other_line
+                    if next_line:
+                        if direction == 'prev':
+                            cmp = next_line < other_line < line
+                        else:
+                            cmp = next_line > other_line > line
+                    else:
+                        if direction == 'prev':
+                            cmp = other_line < line
+                        else:
+                            cmp = other_line > line
+                    if cmp:
+                        next_line = other_line
+                if not next_line and direction == 'prev':
+                    next_line = last_line
+                if not next_line and direction == 'next':
+                    next_line = first_line
+                if next_line:
+                    y = next_line
+                    print(y, diagnostics[y])
+                    x = diagnostics[y][0]['col']
+                    ctx.select([((y, x), (y, x))])
+            else:
+                lsp_sync(ctx)
+
+
+
+        @kak.cmd()
         def lsp_hover(ctx, where):
             """
             Display hover information somewhere ('cursor', 'info' or
@@ -275,7 +321,7 @@ def main_for_filetype(kak, _spawned=set()):
                 info_somewhere(ctx, label, pos, where)
 
 
-        @kak.cmd(hidden=False)
+        @kak.cmd()
         def lsp_references(ctx):
             """
             Find the references to the identifier at the main cursor.
@@ -303,7 +349,7 @@ def main_for_filetype(kak, _spawned=set()):
                 ctx.release()
 
 
-        @kak.cmd(hidden=False)
+        @kak.cmd()
         def lsp_goto_definition(ctx):
             """
             Goto the definition of the identifier at the main cursor.
@@ -377,12 +423,13 @@ def main_for_filetype(kak, _spawned=set()):
                     diagnostics.clear()
                     diagnostics['ts'] = ts
                     flags = [str(ts), '1|   ']
-                    from_severity = ['',
+                    from_severity = [
+                        '',
                         '{red+b}>> ',
                         '{yellow+b}>> ',
                         '{blue}>> ',
                         '{green}>> '
-                        ]
+                    ]
                     for diag in msg['diagnostics']:
                         line0 = int(diag['range']['start']['line']) + 1
                         col0  = int(diag['range']['start']['character']) + 1
