@@ -109,6 +109,7 @@ def nest(*managers):
     else:
         yield ()
 
+
 def single_quote_escape(string):
     """
     Backslash-escape ' and \.
@@ -606,7 +607,6 @@ class Kak(object):
 
 
     def _setup_query(kak, queries, extra_manager=None, reentrant=False):
-
         from_kak = kak._mkfifo()
 
         with nest(extra_manager, kak.sh):
