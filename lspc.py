@@ -10,6 +10,13 @@ from collections import defaultdict
 import six
 
 
+def jsonrpc(obj):
+    obj['jsonrpc'] = '2.0'
+    msg = json.dumps(obj)
+    msg = u"Content-Length: {0}\r\n\r\n{1}".format(len(msg), msg)
+    return msg.encode('utf-8')
+
+
 def esc(cs, s):
     for c in cs:
         s = s.replace(c, "\\" + c)
@@ -72,7 +79,10 @@ def pyls_signatureHelp(result, pos):
 
 def nice_sig(func_label, params, pn, pos):
     func_name, _ = func_label.split('(', 1)
-    _, func_type = func_label.rsplit(')', 1)
+    try:
+        _, func_type = func_label.rsplit(')', 1)
+    except ValueError:
+        func_type = ''
     param_labels = [
         ('*' if i == pn else '') + param['label'] +
         ('*' if i == pn else '')
@@ -88,7 +98,42 @@ def nice_sig(func_label, params, pn, pos):
     return label
 
 
-def main_for_filetype(kak, _spawned=set()):
+class MockStdio(object):
+    def __init__(self, q):
+        self.q = q
+        self.closed = False
+
+    def write(self, msg):
+        for c in msg:
+            self.q.put(chr(c) if isinstance(c,int) else c)
+
+    def flush(self):
+        pass
+
+    def readline(self):
+        cs = []
+        while True:
+            c = self.q.get()
+            cs.append(c)
+            if c == '\n':
+                break
+        return libkak.encode(''.join(cs))
+
+    def read(self, n):
+        cs = []
+        for _ in range(n):
+            c = self.q.get()
+            cs.append(c)
+        return libkak.encode(''.join(cs))
+
+
+class MockPopen(object):
+    def __init__(self, q_in, q_out):
+        self.stdin = MockStdio(q_in)
+        self.stdout = MockStdio(q_out)
+
+
+def main_for_filetype(kak, mock=None, _spawned=set()):
     filetype = kak.opt.filetype()
 
     if filetype in _spawned:
@@ -105,7 +150,10 @@ def main_for_filetype(kak, _spawned=set()):
     print(filetype + ' spawns ' + cmd)
 
     _spawned.add(filetype)
-    lsp = Popen(cmd.split(), stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
+    if mock:
+        lsp = mock
+    else:
+        lsp = Popen(cmd.split(), stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
 
     cbs = {}
     diagnostics = defaultdict(list)
@@ -114,7 +162,6 @@ def main_for_filetype(kak, _spawned=set()):
     def craft(method, params, cb=None, _private={'n': 0}):
         n = '{}-{}'.format(method, _private['n'])
         obj = {
-            'jsonrpc': '2.0',
             'id': n,
             'method': method,
             'params': params
@@ -122,9 +169,7 @@ def main_for_filetype(kak, _spawned=set()):
         if cb:
             cbs[n] = cb
         _private['n'] += 1
-        msg = json.dumps(obj)
-        msg = u"Content-Length: {0}\r\n\r\n{1}".format(len(msg), msg)
-        return msg.encode('utf-8')
+        return jsonrpc(obj)
 
     def call(method, params, cb=None):
         msg = craft(method, params, cb)
@@ -526,7 +571,7 @@ def main_for_filetype(kak, _spawned=set()):
                 kak.release()
 
 
-def main(kak):
+def main(kak, mock=None):
     """
     @type kak: libkak.Kak
     """
@@ -537,13 +582,104 @@ def main(kak):
     kak.send('try %{add-highlighter flag_lines default lsp_flags}')
     kak.sync()  # need this because Kakoune quoting is broken
     kak.hook('global', 'WinSetOption', filter='filetype=.*', group='lsp')(
-        lambda ctx, _: main_for_filetype(ctx))
+        lambda ctx, _: main_for_filetype(ctx, mock))
     kak.hook('global', 'WinDisplay', filter='.*', group='lsp')(
-        lambda ctx, _: main_for_filetype(ctx))
-    main_for_filetype(kak)
+        lambda ctx, _: main_for_filetype(ctx, mock))
+    main_for_filetype(kak, mock)
+
+
+def test(debug=False):
+    import time
+    from threading import Thread
+
+    p, q = Queue(), Queue()
+    kak_mock = MockPopen(p, q)
+    kak = libkak.headless(debug=debug, ui='json' if debug else 'dummy')
+    kak.send('declare-option str filetype test')
+    kak.send('declare-option str lsp_test_cmd mock')
+    kak.send('set global completers option=lsp_completions')
+    kak.sync()
+    kak2 = libkak.Kak('pipe', kak._pid, 'unnamed0', debug=debug)
+    t = Thread(target=main, args=(kak2, kak_mock))
+    t.daemon = True
+    t.start()
+
+    kak.release()
+
+    lsp_mock = MockPopen(p, q)
+
+    def getobj():
+        line = lsp_mock.stdin.readline()
+        header, value = line.split(b":")
+        assert(header == b"Content-Length")
+        cl = int(value)
+        lsp_mock.stdin.readline()
+        import json
+        obj = json.loads(lsp_mock.stdin.read(cl).decode('utf-8'))
+        print(json.dumps(obj, indent=2))
+        return obj
+    obj = getobj()
+    assert(obj['method'] == 'initialize')
+    lsp_mock.stdout.write(jsonrpc({
+        'id': obj['id'],
+        'result': {
+            'capabilities': {
+                'signatureHelpProvider': {
+                    'triggerCharacters': ['(', ',']
+                },
+                'completionProvider': {
+                    'triggerCharacters': ['.']
+                }
+            }
+        }
+    }))
+    time.sleep(1)  # wait for triggers and definition to be set up
+    kak.execute('itest.')
+    kak.release()
+    obj = getobj()
+    assert(obj['method'] == 'textDocument/didOpen')
+    assert(obj['params']['textDocument']['text'] == 'test.\n')
+    lsp_mock.stdout.write(jsonrpc({
+        'id': obj['id'],
+        'result': None
+    }))
+    obj = getobj()
+    assert(obj['method'] == 'textDocument/completion')
+    assert(obj['params']['position'] == {'line': 0, 'character': 5})
+    lsp_mock.stdout.write(jsonrpc({
+        'id': obj['id'],
+        'result': {
+            'items': [
+                {
+                    'label': 'apa',
+                    'kind': 3,
+                    'documentation': 'monkey function',
+                    'detail': 'call the monkey',
+                },
+                {
+                    'label': 'bepa',
+                    'kind': 4,
+                    'documentation': 'monkey constructor',
+                    'detail': 'construct a monkey',
+                }
+            ]
+        }
+    }))
+
+    time.sleep(1)
+    kak.execute('<c-n><c-n><esc>%')
+    kak.sync()
+    s = kak.val.selection()
+    kak.quit()
+    print(s)
+    assert(s == 'test.bepa\n')
 
 
 if __name__ == '__main__':
-    kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
-                     debug='-v' in sys.argv)
-    main(kak)
+    if '--test' in sys.argv:
+        test()
+    else:
+        kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
+                         debug='-v' in sys.argv)
+        main(kak)
+

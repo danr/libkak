@@ -49,10 +49,11 @@ def decode(s):
         raise ValueError('Expected string or bytes')
 
 
-def headless(debug=False):
-    proc = Popen(['kak','-n','-ui','dummy'])
+def headless(debug=False, ui='dummy'):
+    proc = Popen(['kak','-n','-ui',ui])
     time.sleep(0.01)
     kak = Kak('pipe', proc.pid, 'unnamed0', debug=debug)
+    kak._pid = proc.pid
     kak.sync()
     return kak
 
@@ -465,7 +466,7 @@ class Kak(object):
 
         This is buffered and all messages are transmitted in one go.
         """
-        kak.debug('Sending: ', words)
+        #kak.debug('Sending: ', words)
         kak._send(words)
 
 
