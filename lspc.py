@@ -98,41 +98,6 @@ def nice_sig(func_label, params, pn, pos):
     return label
 
 
-class MockStdio(object):
-    def __init__(self, q):
-        self.q = q
-        self.closed = False
-
-    def write(self, msg):
-        for c in msg:
-            self.q.put(chr(c) if isinstance(c,int) else c)
-
-    def flush(self):
-        pass
-
-    def readline(self):
-        cs = []
-        while True:
-            c = self.q.get()
-            cs.append(c)
-            if c == '\n':
-                break
-        return libkak.encode(''.join(cs))
-
-    def read(self, n):
-        cs = []
-        for _ in range(n):
-            c = self.q.get()
-            cs.append(c)
-        return libkak.encode(''.join(cs))
-
-
-class MockPopen(object):
-    def __init__(self, q_in, q_out):
-        self.stdin = MockStdio(q_in)
-        self.stdout = MockStdio(q_out)
-
-
 def main_for_filetype(kak, mock=None, _spawned=set()):
     filetype = kak.opt.filetype()
 
@@ -535,6 +500,7 @@ def main_for_filetype(kak, mock=None, _spawned=set()):
                 msg = json.loads(content)
             except Exception:
                 msg = "Error deserializing server output: " + content
+                print('closed:', lsp.stdout.closed)
                 print(msg, file=sys.stderr)
                 continue
             print('\n'.join(json.dumps(msg, indent=2).split('\n')[:40]))
@@ -592,125 +558,8 @@ def main(kak, mock=None):
     main_for_filetype(kak, mock)
 
 
-def test(debug=False):
-    import time
-    from threading import Thread
-
-    p, q = Queue(), Queue()
-    kak_mock = MockPopen(p, q)
-    kak = libkak.headless(debug=debug, ui='json' if debug else 'dummy')
-    kak.send('declare-option str filetype test')
-    kak.send('declare-option str lsp_test_cmd mock')
-    kak.send('set global completers option=lsp_completions')
-    kak.sync()
-    kak2 = libkak.Kak('pipe', kak._pid, 'unnamed0', debug=debug)
-    t = Thread(target=main, args=(kak2, kak_mock))
-    t.daemon = True
-    t.start()
-
-    kak.release()
-
-    lsp_mock = MockPopen(p, q)
-
-    def getobj():
-        line = lsp_mock.stdin.readline()
-        header, value = line.split(b":")
-        assert(header == b"Content-Length")
-        cl = int(value)
-        lsp_mock.stdin.readline()
-        import json
-        obj = json.loads(lsp_mock.stdin.read(cl).decode('utf-8'))
-        print(json.dumps(obj, indent=2))
-        return obj
-    obj = getobj()
-    assert(obj['method'] == 'initialize')
-    lsp_mock.stdout.write(jsonrpc({
-        'id': obj['id'],
-        'result': {
-            'capabilities': {
-                'signatureHelpProvider': {
-                    'triggerCharacters': ['(', ',']
-                },
-                'completionProvider': {
-                    'triggerCharacters': ['.']
-                }
-            }
-        }
-    }))
-    time.sleep(1)  # wait for triggers and definition to be set up
-    kak.execute('itest.')
-    kak.release()
-    obj = getobj()
-    assert(obj['method'] == 'textDocument/didOpen')
-    assert(obj['params']['textDocument']['text'] == 'test.\n')
-    lsp_mock.stdout.write(jsonrpc({
-        'id': obj['id'],
-        'result': None
-    }))
-    obj = getobj()
-    assert(obj['method'] == 'textDocument/completion')
-    assert(obj['params']['position'] == {'line': 0, 'character': 5})
-    lsp_mock.stdout.write(jsonrpc({
-        'id': obj['id'],
-        'result': {
-            'items': [
-                {
-                    'label': 'apa',
-                    'kind': 3,
-                    'documentation': 'monkey function',
-                    'detail': 'call the monkey',
-                },
-                {
-                    'label': 'bepa',
-                    'kind': 4,
-                    'documentation': 'monkey constructor',
-                    'detail': 'construct a monkey',
-                }
-            ]
-        }
-    }))
-
-    time.sleep(1)
-    kak.execute('<esc>a')
-    kak.send('lsp_complete ""')
-    kak.release()
-    obj = getobj()
-    assert(obj['method'] == 'textDocument/completion')
-    assert(obj['params']['position'] == {'line': 0, 'character': 5})
-    lsp_mock.stdout.write(jsonrpc({
-        'id': obj['id'],
-        'result': {
-            'items': [
-                {
-                    'label': 'apa',
-                    'kind': 3,
-                    'documentation': 'monkey function',
-                    'detail': 'call the monkey',
-                },
-                {
-                    'label': 'bepa',
-                    'kind': 4,
-                    'documentation': 'monkey constructor',
-                    'detail': 'construct a monkey',
-                }
-            ]
-        }
-    }))
-
-    time.sleep(1)
-    kak.execute('<c-n><c-n><esc>%')
-    kak.sync()
-    s = kak.val.selection()
-    kak.quit()
-    print(s)
-    assert(s == 'test.bepa\n')
-
-
 if __name__ == '__main__':
-    if '--test' in sys.argv:
-        test(debug='-v' in sys.argv)
-    else:
-        kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
-                         debug='-v' in sys.argv)
-        main(kak)
+    kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
+                     debug='-v' in sys.argv)
+    main(kak)
 
