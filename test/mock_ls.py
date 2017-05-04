@@ -69,19 +69,18 @@ def test(debug=False):
 
     p, q = Queue(), Queue()
 
-    kak_mock = MockPopen(p, q)
+    lsp_mock = MockPopen(p, q)
     kak = libkak.headless(debug=debug, ui='json' if debug else 'dummy')
-    kak.send('declare-option str filetype test')
-    kak.send('declare-option str lsp_test_cmd mock')
+    kak.send('declare-option str filetype somefiletype')
+    kak.send('declare-option str lsp_somefiletype_cmd mock')
     kak.send('set global completers option=lsp_completions')
     kak.sync()
     kak2 = libkak.Kak('pipe', kak._pid, 'unnamed0', debug=debug)
-    t = Thread(target=lspc.main, args=(kak2, kak_mock))
+    t = Thread(target=lspc.main, args=(kak2, {'mock': lsp_mock}))
     t.daemon = True
     t.start()
 
     kak.release()
-    lsp_mock = MockPopen(p, q)
 
     def listen():
         line = lsp_mock.stdin.readline()
@@ -161,7 +160,7 @@ def test(debug=False):
     assert(s == 'test.bepa\n')
 
     kak.quit(force=True)
-    kak_mock.stdout.closed = True
+    lsp_mock.stdout.closed = True
 
 
 if __name__ == '__main__':

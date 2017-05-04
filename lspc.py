@@ -100,7 +100,7 @@ def nice_sig(func_label, params, pn, pos):
 
 class Langserver(object):
     @staticmethod
-    def for_filetype(kak, filetype, mock, _spawned=dict()):
+    def for_filetype(kak, filetype, mock={}, _spawned=dict()):
         if filetype in _spawned:
             print(filetype + ' already spawned')
             kak.release()
@@ -113,17 +113,17 @@ class Langserver(object):
                 print(filetype + ' has no command')
                 return None
 
-            _spawned[filetype] = Langserver(filetype, mock, cmd, pwd)
+            _spawned[filetype] = Langserver(filetype, pwd, cmd, mock=mock)
             return _spawned[filetype]
 
 
-    def __init__(self, filetype, mock, cmd, pwd):
+    def __init__(self, filetype, pwd, cmd, mock={}):
         self.cbs = {}
 
         print(filetype + ' spawns ' + cmd)
 
-        if cmd == 'mock':
-            self.proc = mock
+        if cmd in mock:
+            self.proc = mock[cmd]
         else:
             self.proc = Popen(cmd.split(), stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
 
@@ -252,7 +252,7 @@ class Langserver(object):
                     kak.release()
 
 
-def main(kak, mock=None):
+def main(kak, mock={}):
     """
     @type kak: libkak.Kak
     """
