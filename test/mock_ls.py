@@ -4,6 +4,7 @@ sys.path.append(os.getcwd())
 import libkak
 import lspc
 from multiprocessing import Queue
+import json
 
 class MockStdio(object):
     r"""
@@ -88,9 +89,8 @@ def test(debug=False):
         assert(header == b"Content-Length")
         cl = int(value)
         lsp_mock.stdin.readline()
-        import json
         obj = json.loads(lsp_mock.stdin.read(cl).decode('utf-8'))
-        print(json.dumps(obj, indent=2))
+        print('heard:', json.dumps(obj, indent=2))
         return obj
 
     def reply(obj, result):
@@ -100,6 +100,7 @@ def test(debug=False):
         }))
 
 
+    print('listening for initalization...')
     obj = listen()
     assert(obj['method'] == 'initialize')
     reply(obj, {
@@ -115,9 +116,14 @@ def test(debug=False):
     time.sleep(1)  # wait for triggers and definition to be set up
     kak.execute('itest.')
     kak.release()
+    print('listening for hook on completion...')
     obj = listen()
     assert(obj['method'] == 'textDocument/didOpen')
-    assert(obj['params']['textDocument']['text'] == 'test.\n')
+    #assert(obj['params']['textDocument']['text'] == 'test.\n')
+    reply(obj, None)
+    obj = listen()
+    assert(obj['method'] == 'textDocument/didChange')
+    assert(obj['params']['contentChanges'][0]['text'] == 'test.\n')
     reply(obj, None)
     obj = listen()
     assert(obj['method'] == 'textDocument/completion')
@@ -151,11 +157,10 @@ def test(debug=False):
     kak.execute('<c-n><c-n><esc>%')
     kak.sync()
     s = kak.val.selection()
-    print(s)
+    print('final selection:', s)
     assert(s == 'test.bepa\n')
 
     kak.quit(force=True)
-    kak2.quit(force=True)
     kak_mock.stdout.closed = True
 
 

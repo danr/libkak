@@ -256,10 +256,10 @@ class val(object):
 
         def listof(p):
             def inner(s):
-                kak.debug(s)
+                #kak.debug(s)
                 m = list(re.split(r'(?<!\\)(\\\\)*:', s))
                 ms = [x+(y or '') for x, y in zip(m[::2], (m+[''])[1::2])]
-                kak.debug(ms)
+                #kak.debug(ms)
                 return [p(x.replace('\\\\', '\\').replace('\\:', ':'))
                         for x in ms]
             return inner
@@ -482,7 +482,7 @@ class Kak(object):
         Release control over kak and continue asynchronously.
         """
         if not kak._session:
-            kak.debug('getting session&client')
+            #kak.debug('getting session&client')
             kak._session, kak._client = kak.ask(kak.val.session, kak.val.client)
         kak.debug('releasing')
         kak._flush()
@@ -513,22 +513,20 @@ class Kak(object):
         if not kak._channel:
             raise ValueError('Need a channel to kak')
         if kak._channel == 'stdout':
-            kak.debug('stdout chunk', chunk)
+            kak.debug('stdout', chunk)
             print(chunk)
         elif kak._channel == 'pipe':
             if not kak._session:
                 raise ValueError('Cannot pipe to kak without session details')
             p = Popen(['kak','-p',str(kak._session)], stdin=PIPE)
-            kak.debug('piping chunk', chunk)
+            kak.debug('piping', chunk)
             p.communicate(encode(chunk))
             p.wait()
-            kak.debug('waiting finished')
+            kak.debug('pipe done')
         else:
-            kak.debug('writing to ', kak._channel)
-            kak.debug('sending chunk:\n', chunk)
+            kak.debug('writing to', kak._channel, ':', chunk)
             with open(kak._channel, 'wb') as f:
                 f.write(encode(chunk))
-            kak.debug('writing done ', kak._channel)
 
         kak._messages=[]
         kak._channel=None
@@ -613,7 +611,7 @@ class Kak(object):
         with nest(extra_manager, kak.sh):
             qvars = []
 
-            kak.debug('queries:', queries)
+            #kak.debug('queries:', queries)
             for i, q in enumerate(queries):
                 qvar = "__kak_q"+str(i)
                 kak.send(qvar+'=${'+q.variable_for_sh()+'//_/_u}')
@@ -637,14 +635,14 @@ class Kak(object):
             kak._main._ears[from_kak] = ()
             with open(from_kak, 'rb') as f:
                 response = decode(f.read())
-            kak.debug('Got response: ' + response)
+            #kak.debug('Got response: ' + response)
             if u'_q' in response:
                 raise RuntimeError('Quit has been called')
             del kak._main._ears[from_kak]
 
             raw = [ans.replace(u'_u', u'_') for ans in response.split(u'_s')]
             to_kak = raw.pop()
-            kak.debug(to_kak, repr(raw))
+            #kak.debug(to_kak, repr(raw))
             answers = tuple(q.parse(ans) for ans, q in zip(raw, queries))
             return to_kak, answers
 
@@ -685,7 +683,7 @@ class Kak(object):
             handle = kak._setup_query(questions, extra_manager=extra_manager)
             kak._flush()
             to_kak, answers = handle()
-            kak.debug('yay:', to_kak, answers)
+            kak.debug(to_kak, 'responded:', answers)
             kak._channel = to_kak
             return answers
 
@@ -703,17 +701,20 @@ class Kak(object):
         def dispatcher(ctx):
             while True:
                 try:
-                    kak.debug('dispatching listen')
+                    #kak.debug('dispatching listen')
                     to_kak, answers = handle()
-                    kak.debug('dispatching received', to_kak, repr(answers))
+                    #kak.debug('dispatching received', to_kak, repr(answers))
                 except RuntimeError:
                     return
-                kak.debug('handling one', to_kak)
+                #kak.debug('handling one', to_kak)
                 @ctx._fork()
                 def handle_one(ictx):
-                    ictx._channel = to_kak
-                    f(ictx, *answers)
-                    ictx._flush()
+                    try:
+                        ictx._channel = to_kak
+                        f(ictx, *answers)
+                        ictx._flush()
+                    except RuntimeError:
+                        return
 
 
     def sync(kak):
