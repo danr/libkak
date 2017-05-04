@@ -93,10 +93,11 @@ def test(debug=False):
         return obj
 
     def reply(obj, result):
-        lsp_mock.stdout.write(lspc.jsonrpc({
+        msg = lspc.jsonrpc({
             'id': obj['id'],
             'result': result
-        }))
+        })
+        lsp_mock.stdout.write(msg)
 
 
     print('listening for initalization...')
@@ -112,14 +113,18 @@ def test(debug=False):
             }
         }
     })
-    time.sleep(1)  # wait for triggers and definition to be set up
-    kak.execute('itest.')
+    print('sync to get hooks up and running...')
+    kak.send('lsp_sync')
     kak.release()
-    print('listening for hook on completion...')
     obj = listen()
     assert(obj['method'] == 'textDocument/didOpen')
-    #assert(obj['params']['textDocument']['text'] == 'test.\n')
+    assert(obj['params']['textDocument']['text'] == '\n')
     reply(obj, None)
+    time.sleep(1)
+
+    print('listening for hook on completion...')
+    kak.execute('itest.')
+    kak.release()
     obj = listen()
     assert(obj['method'] == 'textDocument/didChange')
     assert(obj['params']['contentChanges'][0]['text'] == 'test.\n')

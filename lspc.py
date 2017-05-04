@@ -319,8 +319,8 @@ def main(kak, mock={}):
                  })(q.put)
                 opened.add(uri)
             q.get()
+        d = locals()
         if method:
-            d = locals()
             langserver.call(method, params(d))(q.put)
             def _cont(k):
                 r = q.get()
@@ -328,7 +328,10 @@ def main(kak, mock={}):
                 return k(r, d)
             return _cont
         else:
-            return None
+            return d
+
+
+    hooks_setup = set()
 
 
     @kak.cmd()
@@ -336,10 +339,29 @@ def main(kak, mock={}):
         """
         Synchronize the current file.
 
+        Makes sure that:
+            * the language server is registered at the language server,
+            * the language server has an up-to-date view on the buffer
+              (even if it is not saved).
+            * the window has hooks set up for complete & sig help
+
         Hooked automatically to NormalBegin and WinDisplay.
         """
         ctx.echo(libkak.Flag('debug'), 'sync')
-        handler(ctx, None, {})
+        d = handler(ctx, None, {})
+        buf = d['buffile']
+        if buf not in hooks_setup:
+            hooks_setup.add(buf)
+            sig = d['langserver'].sig_help_chars
+            if sig:
+                hook = 'hook -group lsp buffer={} InsertChar [{}] lsp_signature_help'.format(buf, ''.join(sig))
+                print(hook)
+                ctx.send(hook)
+            compl = d['langserver'].complete_chars
+            if compl:
+                hook = 'hook -group lsp buffer={} InsertChar [{}] %[lsp_complete ""]'.format(buf, ''.join(compl))
+                print(hook)
+                ctx.send(hook)
         ctx.release()
 
 
@@ -373,6 +395,7 @@ def main(kak, mock={}):
                 info_somewhere(ctx, label, pos, 'cursor')
             ctx.release()
 
+    """
     @kak.hook('global', 'InsertChar', group='lsp')
     def _(ctx, char):
         ft = ctx.opt.filetype()
@@ -389,6 +412,7 @@ def main(kak, mock={}):
         if ls and char in ls.complete_chars:
             ctx.send('lsp_complete ""')
         ctx.release()
+    """
 
     @kak.cmd()
     def lsp_complete(ctx, extra_cmd):
