@@ -177,7 +177,7 @@ def main_for_filetype(kak, mock=None, _spawned=set()):
         lsp.stdin.flush()
         print('sent:', method)
 
-    def handler(ctx, method, params, extra_cmd=''):
+    def handler(ctx, method, params, extra_cmd='', _private={}):
         """
         # this function should use the filetype's call method,
         # which communicates with the correct service,
@@ -209,22 +209,26 @@ def main_for_filetype(kak, mock=None, _spawned=set()):
         q = Queue()
         pos = {'line': line - 1, 'character': column - 1}
         uri = 'file://' + buffile
-        if uri in opened:
-            call('textDocument/didChange', {
-                'textDocument': {'uri': uri, 'version': ts},
-                'contentChanges': [{'text': contents}]
-            }, q.put)
+        if _private.get(buffile) == ts:
+            print('no need to send update')
         else:
-            call('textDocument/didOpen', {
-                 'textDocument': {
-                     'uri': uri,
-                     'version': ts,
-                     'languageId': ft,
-                     'text': contents
-                 },
-                 }, q.put)
-            opened.add(uri)
-        q.get()
+            _private[buffile] = ts
+            if uri in opened:
+                call('textDocument/didChange', {
+                    'textDocument': {'uri': uri, 'version': ts},
+                    'contentChanges': [{'text': contents}]
+                }, q.put)
+            else:
+                call('textDocument/didOpen', {
+                     'textDocument': {
+                         'uri': uri,
+                         'version': ts,
+                         'languageId': ft,
+                         'text': contents
+                     },
+                     }, q.put)
+                opened.add(uri)
+            q.get()
         if method:
             d = locals()
             call(method, params(d), q.put)
@@ -667,6 +671,33 @@ def test(debug=False):
     }))
 
     time.sleep(1)
+    kak.execute('<esc>a')
+    kak.send('lsp_complete ""')
+    kak.release()
+    obj = getobj()
+    assert(obj['method'] == 'textDocument/completion')
+    assert(obj['params']['position'] == {'line': 0, 'character': 5})
+    lsp_mock.stdout.write(jsonrpc({
+        'id': obj['id'],
+        'result': {
+            'items': [
+                {
+                    'label': 'apa',
+                    'kind': 3,
+                    'documentation': 'monkey function',
+                    'detail': 'call the monkey',
+                },
+                {
+                    'label': 'bepa',
+                    'kind': 4,
+                    'documentation': 'monkey constructor',
+                    'detail': 'construct a monkey',
+                }
+            ]
+        }
+    }))
+
+    time.sleep(1)
     kak.execute('<c-n><c-n><esc>%')
     kak.sync()
     s = kak.val.selection()
@@ -677,7 +708,7 @@ def test(debug=False):
 
 if __name__ == '__main__':
     if '--test' in sys.argv:
-        test()
+        test(debug='-v' in sys.argv)
     else:
         kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
                          debug='-v' in sys.argv)
