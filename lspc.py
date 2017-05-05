@@ -193,13 +193,13 @@ class Langserver(object):
     def spawn(self, pwd):
 
         rootUri = 'file://' + pwd
-        @self.handler('initialize', lambda: {
+        @self.call('initialize', {
             'processId': os.getpid(),
             'rootUri': rootUri,
             'rootPath': pwd,
             'capabilities': {}
         }, call_immediately=True)
-        def _(result):
+        def initialized(result):
             try:
                 signatureHelp = result['capabilities']['signatureHelpProvider']
                 self.sig_help_chars = signatureHelp['triggerCharacters']
