@@ -282,15 +282,16 @@ def main(session, mock={}):
             else:
                 timestamps[(filetype, buffile)] = timestamp
                 with tempfile.NamedTemporaryFile() as tmp:
-                    fifo2 = mkfifo()
+                    fifo, fifo_cleanup = libkak.mkfifo()
                     pipe_to_kak(
                         session, """eval -client {} -no-hooks %(
                                     write {}
                                     %sh(echo done > {})
                                  )""".format(client, tmp.name, fifo2))
-                    with open(fifo2, 'r') as fifo_fp:
+                    with open(fifo, 'r') as fifo_fp:
+                        fifo_fp.readline()
                         contents = open(tmp.name, 'r').read()
-                        rmfifo(fifo2)
+                    fifo_cleanup()
                 if old_timestamp is None:
                     langserver.call('textDocument/didOpen', {
                          'textDocument': {

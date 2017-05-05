@@ -1,34 +1,84 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
+
+>>> kak = libkak.headless()
+>>> time.sleep(0.1)
+>>> libkak.pipe(kak.pid, 'exec iapa_bepa<ret>cepa_sepa<esc>%H', 'unnamed0')
+>>> q = Queue()
+>>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection, selection_desc: q.put([selection, selection_desc]))
+>>> a, b = q.get()
+>>> print(a)
+apa_bepa
+cepa_sepa
+>>> print(b)
+((1, 1), (2, 9))
+>>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+>>> kak.wait()
+0
+>>> fifo_cleanup()
 
 >>> kak = libkak.headless()
 >>> @libkak.remote(kak.pid)
 ... def write_position(line, column):
-...      return join('exec', 'a', str(y), ':', str(x), '<esc>')
->>> libkak.pipe(kak.pid, 'write_position')
->>> libkak.pipe('a,<space><esc>')
->>> write_position(kak)
->>> kak.execute('xH')
->>> libkak.remote(kak.pid)(lambda selection: print(selection))
+...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
+>>> libkak.pipe(kak.pid, 'write_position', 'unnamed0')
+>>> time.sleep(0.1)
+>>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0')
+>>> time.sleep(0.1)
+>>> write_position('unnamed0')
+>>> time.sleep(0.1)
+>>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0')
+>>> time.sleep(0.1)
+>>> q = Queue()
+>>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection: q.put(selection))
+>>> print(q.get())
 1:1, 1:5
->>> libkak.pipe(kak.pid, 'q!')
+>>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+>>> kak.wait()
+0
+>>> fifo_cleanup()
+
+>>> kak = libkak.headless()
+>>> time.sleep(0.1)
+>>> q = Queue()
+>>> @libkak.remote(kak.pid, params='2..')
+... def test(arg1, arg2, args):
+...      q.put((arg1, arg2, args))
+>>> test('unnamed0', 'one', 'two', 'three', 'four')
+>>> q.get()
+('one', 'two', ('one', 'two', 'three', 'four'))
+>>> test('unnamed0', 'a\nb', 'c_d', 'e_sf', 'g_u_n___n_S_s__Sh')
+>>> q.get()
+('a\nb', 'c_d', ('a\nb', 'c_d', 'e_sf', 'g_u_n___n_S_s__Sh'))
+>>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+>>> kak.wait()
+0
+>>> fifo_cleanup()
+
 
 """
 from __future__ import print_function
 import inspect
 import sys
 import os
-import tempfile
-from functools import wraps
+import functools
 from subprocess import Popen, PIPE
-from threading import Thread, Queue
+from threading import Thread
+from six.moves.queue import Queue
 import itertools as it
-import threading
 import time
-import shutil
 import six
-import re
 import tempfile
+
+
+def pipe(session, msg, client=None):
+    if client:
+        msg = "eval -client {} {}".format(client, single_quoted(msg))
+
+    p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
+    print(session, msg, file=sys.stderr)
+    p.communicate(encode(msg))
+    time.sleep(0.1)
 
 
 def join(words, sep=u' '):
@@ -62,13 +112,8 @@ def decode(s):
         raise ValueError('Expected string or bytes')
 
 
-def headless(debug=False, ui='dummy'):
-    proc = Popen(['kak','-n','-ui',ui])
-    time.sleep(0.01)
-    kak = Kak('pipe', proc.pid, 'unnamed0', debug=debug)
-    kak._pid = proc.pid
-    kak.sync()
-    return kak
+def headless(ui='dummy'):
+    return Popen(['kak','-n','-ui',ui])
 
 
 def single_quote_escape(string):
@@ -85,6 +130,7 @@ def single_quoted(string):
     >>> print(single_quoted(u"i'ié"))
     'i\\'ié'
     """
+    return u"'" + single_quote_escape(string) + u"'"
 
 
 def coord(s):
@@ -162,17 +208,27 @@ quickargs = {
 def fork(loop):
     def decorate(f):
         def target():
-            while True:
-                f()
-                if not loop:
-                    break
+            try:
+                while True:
+                    f()
+                    if not loop:
+                        break
+            except RuntimeError:
+                pass
         thread = Thread(target=target)
+        thread.daemonize = True
         thread.start()
     return decorate
 
 
+def safe_kwcall(f, d):
+    args = inspect.getargspec(f).args
+    return f(**{k: v for k, v in six.iteritems(d) if k in args})
+
+
 def remote(session,
            oneshot=False,
+           oneshot_client=None,
            modsh=None,
            def_quoting=('%(', ')'),
            sh_quoting=('%sh(', ')'),
@@ -189,22 +245,27 @@ def remote(session,
         if before_decorated:
             argspecs += inspect.getargspec(before_decorated).args
 
-        qa = dict(quickargs, more_quickargs)
+        if 'client' not in argspecs:
+            argspecs += ['client']
+
+        qa = dict(quickargs, **more_quickargs)
         args = []
         for arg in argspecs:
-            if arg != 'r':
+            if arg in qa:
                 splice, parse = qa[arg]
                 args.append((arg, splice, parse))
 
-        fifo = TODO
+        fifo, fifo_cleanup = mkfifo()
 
-        msg = r"""
+        msg = """__newline="\n"
                __args=""
-               for __arg; do __args="${{__args}}_S${{__arg//_/_u}}" done
-               __argsplice="{argsplice}"
-               echo "${{__argsplice//\n/_n}}" > {fifo}
+               for __arg; do __args="${{__args}}_S${{__arg//_/_u}}"; done
+               {underscores}
+               echo "{argsplice}" > {fifo}
             """.format(
-                argsplice = '_s'.join('${' + splice + '//_/_u}'
+                underscores = '\n'.join('__' + splice + '=${' + splice + '//_/_u}'
+                                        for _, splice, _ in args),
+                argsplice = '_s'.join('${__' + splice + '//$__newline/_n}'
                                       for _, splice, _ in args),
                 fifo = fifo)
 
@@ -217,52 +278,73 @@ def remote(session,
             head = "def -allow-override -params {params} -docstring {docstring} {name} ".format(
                 name = f.__name__,
                 params = params,
-                docstring = single_quoted(f.__docstring__))
+                docstring = single_quoted(f.__doc__ or ''))
             msg = head + def_quoting[0] + msg + def_quoting[1]
 
-        pipe_to_kak(session, msg)
+        if oneshot and oneshot_client:
+            head = 'eval -client ' + oneshot_client + ' '
+            msg = head + def_quoting[0] + msg + def_quoting[1]
+
+        pipe(session, msg)
 
         @fork(loop = not oneshot)
         def listen():
+            #print(fifo + ' waiting for line...', file=sys.stderr)
             with open(fifo, 'r') as fp:
+                line = fp.readline().rstrip()
+                if line == '_q':
+                    fifo_cleanup()
+                    raise RuntimeError('fifo demands quit')
+                print(fifo + ' replied:' + repr(line), file=sys.stderr)
                 params = [v.replace('_n', '\n').replace('_u', '_')
-                          for v in fp.readline().split('_s')]
+                          for v in line.split('_s')]
+            print(fifo + ' replied:', params, file=sys.stderr)
+            if oneshot:
+                fifo_cleanup()
             r = {}
-            for arg, value in it.izip_longest(args, params)
+            for arg, value in zip(args, params):
                 name, _, parse = arg
                 r[name] = parse(value)
 
             if before_decorated:
                 r['r'] = r  # so that before_decorated may modify it
-                before_decorated(**r)
+                safe_kwcall(before_decorated, r)
 
-            x = f(**r)
+            x = safe_kwcall(f, r)
             if x:
-                pipe_to_kak(session, x)
+                pipe(session, x, r['client'])
 
 
         if oneshot:
             return None
         else:
-            import functools
             @functools.wraps(f)
-            def call_from_python(*args):
+            def call_from_python(client, *args):
                 escaped = [single_quoted(arg) for arg in args]
-                pipe_to_kak(' '.join([f.__name__] + escaped))
+                pipe(session, ' '.join([f.__name__] + escaped), client)
             return call_from_python
 
     return decorate
 
 
+def mkfifo(active_fifos = {}):
+    fifo_dir = tempfile.TemporaryDirectory()
+    fifo = os.path.join(fifo_dir.name, 'fifo')
+    os.mkfifo(fifo)
+    def rm():
+        del active_fifos[fifo]
+        os.remove(fifo)
+        fifo_dir.cleanup()
+    active_fifos[fifo] = rm
+    return fifo, rm
 
 
-def _mkfifo(kak):
-    kak._counter += 1
-    name = kak._dir + '/' + str(kak._counter)
-    os.mkfifo(name)
-    return name
+def fifo_cleanup():
+    for x in list(six.iterkeys(mkfifo.__defaults__[0])):
+        open(x, 'w').write('_q\n')
 
 
+'''
 def _cmd_test():
     """
     >>> kak = headless()
@@ -376,6 +458,7 @@ def _test_selections(fragments, stride=1):
             pprint(list(zip(have, want)))
             print(have == want)
         kak.quit()
+'''
 
 
 if __name__ == '__main__':
