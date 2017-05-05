@@ -1,62 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""
 
->>> kak = libkak.headless()
->>> time.sleep(0.1)
->>> libkak.pipe(kak.pid, 'exec iapa_bepa<ret>cepa_sepa<esc>%H', 'unnamed0')
->>> q = Queue()
->>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection, selection_desc: q.put([selection, selection_desc]))
->>> a, b = q.get()
->>> print(a)
-apa_bepa
-cepa_sepa
->>> print(b)
-((1, 1), (2, 9))
->>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
->>> kak.wait()
-0
->>> fifo_cleanup()
-
->>> kak = libkak.headless()
->>> @libkak.remote(kak.pid)
-... def write_position(line, column):
-...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
->>> libkak.pipe(kak.pid, 'write_position', 'unnamed0')
->>> time.sleep(0.1)
->>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0')
->>> time.sleep(0.1)
->>> write_position('unnamed0')
->>> time.sleep(0.1)
->>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0')
->>> time.sleep(0.1)
->>> q = Queue()
->>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection: q.put(selection))
->>> print(q.get())
-1:1, 1:5
->>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
->>> kak.wait()
-0
->>> fifo_cleanup()
-
->>> kak = libkak.headless()
->>> time.sleep(0.1)
->>> q = Queue()
->>> @libkak.remote(kak.pid, params='2..')
-... def test(arg1, arg2, args):
-...      q.put((arg1, arg2, args))
->>> test('unnamed0', 'one', 'two', 'three', 'four')
->>> q.get()
-('one', 'two', ('one', 'two', 'three', 'four'))
->>> test('unnamed0', 'a\nb', 'c_d', 'e_sf', 'g_u_n___n_S_s__Sh')
->>> q.get()
-('a\nb', 'c_d', ('a\nb', 'c_d', 'e_sf', 'g_u_n___n_S_s__Sh'))
->>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
->>> kak.wait()
-0
->>> fifo_cleanup()
-
-
-"""
 from __future__ import print_function
 import inspect
 import sys
@@ -69,16 +12,16 @@ import itertools as it
 import time
 import six
 import tempfile
+import re
 
 
 def pipe(session, msg, client=None):
     if client:
-        msg = "eval -client {} {}".format(client, single_quoted(msg))
+        msg = u'eval -client {} {}'.format(client, single_quoted(msg))
 
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    print(session, msg, file=sys.stderr)
+    #print(session, msg, file=sys.stderr)
     p.communicate(encode(msg))
-    time.sleep(0.1)
 
 
 def join(words, sep=u' '):
@@ -112,15 +55,11 @@ def decode(s):
         raise ValueError('Expected string or bytes')
 
 
-def headless(ui='dummy'):
-    return Popen(['kak','-n','-ui',ui])
-
-
 def single_quote_escape(string):
     """
     Backslash-escape ' and \.
     """
-    return string.replace(u"\\'", u"\\\\'").replace(u"'", u"\\'")
+    return string.replace("\\'", "\\\\'").replace("'", "\\'")
 
 
 def single_quoted(string):
@@ -133,22 +72,55 @@ def single_quoted(string):
     return u"'" + single_quote_escape(string) + u"'"
 
 
+def backslash_escape(cs, s):
+    for c in cs:
+        s = s.replace(c, "\\" + c)
+    return s
+
+
 def coord(s):
     return tuple(map(int, s.split('.')))
+
 
 def selection_desc(x):
     return tuple(map(coord, x.split(',')))
 
+
 def string(x):
     return x
 
+
 def listof(p):
+    r"""
+
+    >>> import random
+    >>> def random_fragment():
+    ...     return ''.join(random.sample(':\\abc', random.randrange(1, 5)))
+    >>> def test(n):
+    ...     xs = [random_fragment() for _ in range(n)]
+    ...     if xs and xs[-1] == '':
+    ...         xs[-1] = 'c'
+    ...     exs = ':'.join(backslash_escape('\\:', s) for s in xs)
+    ...     xs2 = listof(string)(exs)
+    ...     assert(xs == xs2)
+    >>> for n in range(0, 10):
+    ...     test(n)
+
+    """
+
     def inner(s):
-        m = list(re.split(r'(?<!\\)(\\\\)*:', s))
-        ms = [x+(y or '') for x, y in zip(m[::2], (m+[''])[1::2])]
-        return [p(x.replace('\\\\', '\\').replace('\\:', ':'))
-                for x in ms]
+        def rmlastcolon(s):
+            if s and s[-1] == ':':
+                return s[:-1]
+            else:
+                return s
+
+        ms = [m.group(0) for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
+        ms = [m if i == len(ms) - 1 else rmlastcolon(m)
+              for i, m in enumerate(ms)]
+        return [p(re.sub(r'\\(.)', '\g<1>', x)) for x in ms]
     return inner
+
 
 def args_parse(s):
     return tuple(x.replace('_u', '_') for x in s.split('_S')[1:])
@@ -239,8 +211,6 @@ def remote(session,
 
     def decorate(f):
 
-        import inspect
-
         argspecs = inspect.getargspec(f).args
         if before_decorated:
             argspecs += inspect.getargspec(before_decorated).args
@@ -261,7 +231,7 @@ def remote(session,
                __args=""
                for __arg; do __args="${{__args}}_S${{__arg//_/_u}}"; done
                {underscores}
-               echo "{argsplice}" > {fifo}
+               echo -n "{argsplice}" > {fifo}
             """.format(
                 underscores = '\n'.join('__' + splice + '=${' + splice + '//_/_u}'
                                         for _, splice, _ in args),
@@ -291,14 +261,14 @@ def remote(session,
         def listen():
             #print(fifo + ' waiting for line...', file=sys.stderr)
             with open(fifo, 'r') as fp:
-                line = fp.readline().rstrip()
+                line = decode(fp.readline()).rstrip()
                 if line == '_q':
                     fifo_cleanup()
                     raise RuntimeError('fifo demands quit')
-                print(fifo + ' replied:' + repr(line), file=sys.stderr)
+                #print(fifo + ' replied:' + repr(line), file=sys.stderr)
                 params = [v.replace('_n', '\n').replace('_u', '_')
                           for v in line.split('_s')]
-            print(fifo + ' replied:', params, file=sys.stderr)
+            #print(fifo + ' replied:', params, file=sys.stderr)
             if oneshot:
                 fifo_cleanup()
             r = {}
@@ -306,13 +276,16 @@ def remote(session,
                 name, _, parse = arg
                 r[name] = parse(value)
 
-            if before_decorated:
-                r['r'] = r  # so that before_decorated may modify it
-                safe_kwcall(before_decorated, r)
+            try:
+                if before_decorated:
+                    r['r'] = r  # so that before_decorated may modify it
+                    safe_kwcall(before_decorated, r)
 
-            x = safe_kwcall(f, r)
-            if x:
-                pipe(session, x, r['client'])
+                x = safe_kwcall(f, r)
+                if x:
+                    pipe(session, x, r['client'])
+            except TypeError as e:
+                print(str(e), file=sys.stderr)
 
 
         if oneshot:
@@ -328,13 +301,13 @@ def remote(session,
 
 
 def mkfifo(active_fifos = {}):
-    fifo_dir = tempfile.TemporaryDirectory()
-    fifo = os.path.join(fifo_dir.name, 'fifo')
+    fifo_dir = tempfile.mkdtemp()
+    fifo = os.path.join(fifo_dir, 'fifo')
     os.mkfifo(fifo)
     def rm():
         del active_fifos[fifo]
         os.remove(fifo)
-        fifo_dir.cleanup()
+        os.rmdir(fifo_dir)
     active_fifos[fifo] = rm
     return fifo, rm
 
@@ -344,121 +317,81 @@ def fifo_cleanup():
         open(x, 'w').write('_q\n')
 
 
-'''
-def _cmd_test():
-    """
-    >>> kak = headless()
-    >>> @kak.cmd()
-    ... def test(ctx, txt, y=kak.val.cursor_line):
-    ...     ctx.execute("oTest!<space>", txt, "<space>", str(y), "<esc>")
-    ...     return ctx.val.selection()
-    >>> print(test(kak, 'a'))
-    1
-    >>> kak.evaluate('test b')
-    >>> print(test(kak, 'c'))
-    3
-    >>> kak.execute("%")
-    >>> print(kak.val.selection())
-    <BLANKLINE>
-    Test! a 1
-    Test! b 2
-    Test! c 3
-    <BLANKLINE>
-    >>> kak.quit()
-    """
-    pass
+def headless(ui='dummy'):
+    p = Popen(['kak','-n','-ui',ui])
+    time.sleep(0.01)
+    return p
 
 
-def _unicode_test():
+def test_unicode_and_escaping():
     u"""
     >>> kak = libkak.headless()
-    >>> kak.execute(u"iåäö<esc>Gh")
-    >>> print(kak.val.selection())
-    åäö
-    >>> kak.quit()
-
-    >>> kak = libkak.unconnected()
-    >>> kak.execute(u"iåäö<esc>")
-    >>> print(kak.debug_sent())
-    exec  'iåäö<esc>'
+    >>> libkak.pipe(kak.pid, u'exec iapa_bepa<ret>åäö_s_u_n<esc>%H', 'unnamed0')
+    >>> q = Queue()
+    >>> call = libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')
+    >>> call(lambda selection: q.put(selection))
+    >>> print(q.get())
+    apa_bepa
+    åäö_s_u_n
+    >>> call(lambda selection_desc: q.put(selection_desc))
+    >>> print(q.get())
+    ((1, 1), (2, 12))
+    >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+    >>> kak.wait()
+    0
+    >>> fifo_cleanup()
     """
     pass
 
 
-def _newline_test():
-    """
+def test_remote_commands():
+    u"""
     >>> kak = libkak.headless()
-    >>> kak.execute("3o<c-r>#<esc>%")
-    >>> print(kak.val.selection())
-    <BLANKLINE>
-    1
-    2
-    3
-    <BLANKLINE>
-    >>> kak.quit()
+    >>> @libkak.remote(kak.pid)
+    ... def write_position(line, column):
+    ...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
+    >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0')
+    >>> time.sleep(0.02)
+    >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0')
+    >>> write_position('unnamed0')
+    >>> time.sleep(0.01)
+    >>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0')
+    >>> q = Queue()
+    >>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection: q.put(selection))
+    >>> print(q.get())
+    1:1, 1:5
+    >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+    >>> kak.wait()
+    0
+    >>> fifo_cleanup()
     """
     pass
 
 
-
-def __z_test():
-    """
+def test_commands_with_params():
+    u"""
     >>> kak = libkak.headless()
-    >>> kak.execute('Zz')
-    >>> kak.sync()
-    >>> kak.quit()
+    >>> q = Queue()
+    >>> @libkak.remote(kak.pid, params='2..')
+    ... def test(arg1, arg2, args):
+    ...      q.put((arg1, arg2) + args[2:])
+    >>> test(None, 'one', 'two', 'three', 'four')
+    >>> print(', '.join(q.get()))
+    one, two, three, four
+    >>> test(None, 'a\\nb', 'c_d', 'e_sf', 'g_u_n__ __n_S_s__Sh')
+    >>> print(', '.join(q.get()))
+    a
+    b, c_d, e_sf, g_u_n__ __n_S_s__Sh
+    >>> libkak.pipe(kak.pid, "test 'a\\nb' c_d e_sf 'g_u_n__ __n_S_s__Sh'")
+    >>> print(', '.join(q.get()))
+    a
+    b, c_d, e_sf, g_u_n__ __n_S_s__Sh
+    >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+    >>> kak.wait()
+    0
+    >>> fifo_cleanup()
     """
-
-
-def lines(s):
-    out = ['']
-    for c in s:
-        if c == '\n':
-            out.append('')
-        else:
-            out[-1] = out[-1]+c
-    return out
-
-
-def _test_selections(fragments, stride=1):
-    r"""
-    >>> import random
-    >>> def random_fragment():
-    ...     return ''.join(random.choice(':_su\'')
-    ...                    for _ in range(0, 6))
-    >>> for n in range(1, 20):
-    ...     _test_selections(random_fragment() for _ in range(n))
-    """
-    descs = []
-    buf = ""
-    fragments = list(fragments)
-    for s in fragments:
-        p0 = len(lines(buf)), len(lines(buf)[-1])+1
-        buf += s
-        p1 = len(lines(buf)), len(lines(buf)[-1])
-        y, x = p1
-        if x == 0:
-            p1 = y-1, len(lines(buf)[-1])+1
-
-        #print(repr(s), p0, p1)
-        descs += [(p0, p1)]
-    kak = headless()
-    with tempfile.NamedTemporaryFile('wb') as f:
-        f.write(encode(buf))
-        f.flush()
-        kak.evaluate('edit ' + f.name)
-        kak.select(descs[::stride])
-        have = kak.val.selections()
-        want = [w for w in fragments[::stride]]
-        if have != want:
-            print('have, want: ')
-            print(have)
-            print(want)
-            from pprint import pprint
-            pprint(list(zip(have, want)))
-            print(have == want)
-        kak.quit()
-'''
+    pass
 
 
 if __name__ == '__main__':
@@ -466,14 +399,5 @@ if __name__ == '__main__':
     import sys
     doctest.testmod(extraglobs={'libkak': sys.modules[__name__]})
     sys.exit()
-    dt_runner = doctest.DebugRunner()
-    tests = doctest.DocTestFinder().find(sys.modules[__name__])
-    for t in tests:
-        t.globs['libkak']=sys.modules[__name__]
-        try:
-            dt_runner.run(t)
-        except doctest.UnexpectedException as e:
-            import pdb
-            pdb.post_mortem(e.exc_info[2])
 
 
