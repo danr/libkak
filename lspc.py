@@ -325,8 +325,10 @@ def main(session, mock={}):
                         # if we want a synchronous reply read from some
                         # fifo here that python will write to
                         # benefit: editor locks while waiting for the reply
+                        #          we know when editor is ready
                         # disadvantage: locking could go wrong, or for too long,
                         #               complicates implementation
+                        # LSP seems to only need async, however
                     )
                 )
                 """.format(
@@ -340,6 +342,7 @@ def main(session, mock={}):
 
             @fork
             def listen():
+                # todo: while true if not call_immediately
                 with open(fifo, 'r') as fp:
                     params = [v.replace('_n', '\n').replace('_u', '_')
                               for v in fp.readline().split('_s')]
@@ -397,6 +400,8 @@ def main(session, mock={}):
                 if x:
                     pipe_to_kak(x)
 
+            import functools
+            @functools.wraps(f)
             def call_from_python(*args):
                 escaped = [single_quoted(arg) for arg in args]
                 pipe_to_kak(' '.join([f.__name__] + escaped))
