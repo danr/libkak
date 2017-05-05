@@ -6,8 +6,9 @@ import libkak
 import os
 import tempfile
 from multiprocessing import Queue
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import six
+import itertools as it
 
 
 def jsonrpc(obj):
@@ -17,10 +18,37 @@ def jsonrpc(obj):
     return msg.encode('utf-8')
 
 
+def select(cursors):
+    return ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos)) for pos in cursors)
+
+
+def menu(options):
+    return 'menu -auto-single ' + ' '.join(it.chain(*x) for x in options)
+
+
 def esc(cs, s):
     for c in cs:
         s = s.replace(c, "\\" + c)
     return s
+
+
+def single_quote_escape(string):
+    """
+    Backslash-escape ' and \.
+    """
+    return string.replace(u"\\'", u"\\\\'").replace(u"'", u"\\'")
+
+
+def single_quoted(string):
+    u"""
+    The string wrapped in single quotes and escaped.
+
+    >>> print(single_quoted(u"i'ié"))
+    'i\\'ié'
+    """
+    return u"'" + single_quote_escape(string) + u"'"
+
+
 
 
 def format_pos(pos):
@@ -100,7 +128,7 @@ def nice_sig(func_label, params, pn, pos):
 
 class Langserver(object):
     @staticmethod
-    def for_filetype(kak, filetype, mock={}, _spawned=dict()):
+    def for_filetype(kak, filetype, handler, mock={}, _spawned=dict()):
         if filetype in _spawned:
             print(filetype + ' already spawned')
             kak.release()
@@ -113,12 +141,13 @@ class Langserver(object):
                 print(filetype + ' has no command')
                 return None
 
-            _spawned[filetype] = Langserver(filetype, pwd, cmd, mock=mock)
+            _spawned[filetype] = Langserver(filetype, handler, pwd, cmd, mock=mock)
             return _spawned[filetype]
 
 
-    def __init__(self, filetype, pwd, cmd, mock={}):
+    def __init__(self, filetype, handler, pwd, cmd, mock={}):
         self.cbs = {}
+        self.handler = handler
 
         print(filetype + ' spawns ' + cmd)
 
@@ -151,7 +180,7 @@ class Langserver(object):
 
     def call(self, method, params):
         """
-        Assigns to cbs
+        craft assigns to cbs
         """
         def k(cb=None):
             msg = self.craft(method, params, cb)
@@ -164,24 +193,13 @@ class Langserver(object):
     def spawn(self, pwd):
 
         rootUri = 'file://' + pwd
-        @self.call('initialize', {
+        @self.handler('initialize', lambda: {
             'processId': os.getpid(),
             'rootUri': rootUri,
             'rootPath': pwd,
             'capabilities': {}
-        })
-        def initialized(result):
-            """
-            Make a register new complete char function that sets up a hook
-            that calls lsp_signature_help/lsp_complete if that char
-            is not hooked up yet (for efficiency)
-
-            Or when filetype is set, (re-)make the hooks
-
-            Can have a buffer-specific option with sig-help and complete-help
-            specific setup hooks
-            """
-
+        }, call_immediately=True)
+        def _(result):
             try:
                 signatureHelp = result['capabilities']['signatureHelpProvider']
                 self.sig_help_chars = signatureHelp['triggerCharacters']
@@ -223,119 +241,172 @@ class Langserver(object):
                     else:
                         cb(msg.get('result'))
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    kak.sync()
-                    msg = msg['params']
-                    buffile, ts = kak.ask(kak.val.buffile, kak.val.timestamp)
-                    if msg['uri'] == 'file://' + buffile:
-                        diagnostics.clear()
-                        diagnostics['ts'] = ts
-                        flags = [str(ts), '1|   ']
-                        from_severity = [
-                            '',
-                            '{red+b}>> ',
-                            '{yellow+b}>> ',
-                            '{blue}>> ',
-                            '{green}>> '
-                        ]
-                        for diag in msg['diagnostics']:
-                            line0 = int(diag['range']['start']['line']) + 1
-                            col0 = int(diag['range']['start']['character']) + 1
-                            flags.append(str(line0) + '|' +
-                                         from_severity[diag.get('severity', 1)])
-                            diagnostics[line0].append({
-                                'col': col0,
-                                'message': diag['message']
-                            })
-                        # Can set for other buffers, but they need to be opened
-                        kak.opt.assign('lsp_flags', ':'.join(flags),
-                                       'set buffer=' + buffile)
-                    kak.release()
+                    @self.handler(call_immediately=True)
+                    def _(buffile, timestamp):
+                        msg = msg['params']
+                        if msg['uri'] == 'file://' + buffile:
+                            diagnostics.clear()
+                            diagnostics['ts'] = timestamp
+                            flags = [str(timestamp), '1|   ']
+                            from_severity = [
+                                '',
+                                '{red+b}>> ',
+                                '{yellow+b}>> ',
+                                '{blue}>> ',
+                                '{green}>> '
+                            ]
+                            for diag in msg['diagnostics']:
+                                line0 = int(diag['range']['start']['line']) + 1
+                                col0 = int(diag['range']['start']['character']) + 1
+                                flags.append(str(line0) + '|' +
+                                             from_severity[diag.get('severity', 1)])
+                                diagnostics[line0].append({
+                                    'col': col0,
+                                    'message': diag['message']
+                                })
+                            # todo: Set for the other buffers too (but they need to be opened)
+                            return 'set buffer=' + buffile + ' lsp_flags ' + ':'.join(flags)
 
 
-def main(kak, mock={}):
+def main(session, mock={}):
     """
     @type kak: libkak.Kak
     """
-    kak.remove_hooks('global', 'lsp')
-    kak.send('try %{declare-option completions lsp_completions}')
-    # kak.send('set-option global completers option=lsp_completions')
-    kak.send('try %{declare-option line-flags lsp_flags}')
-    kak.send('try %{add-highlighter flag_lines default lsp_flags}')
-    kak.sync()  # need this because Kakoune quoting is broken
 
-    def lsp_sync_hook(ctx, _):
-        ctx.send('lsp_sync')
-        ctx.release()
-
-    kak.hook('global', 'InsertEnd', group='lsp')(lsp_sync_hook)
-    kak.hook('global', 'WinSetOption', filter='filetype=.*', group='lsp')(lsp_sync_hook)
-    kak.hook('global', 'WinDisplay', group='lsp')(lsp_sync_hook)
+    def pipe_to_kak(msg):
+        p=Popen(['kak', '-p', session.rstrip()], stdin=PIPE)
+        print(msg)
+        p.communicate(msg.encode('utf-8'))
 
     diagnostics = defaultdict(list)
-    opened = set()
-
-    def handler(ctx, method, params, extra_cmd='', _timestamps={}):
-        """
-        @type ctx: libkak.Kak
-        """
-        ctx.send("eval -draft '")
-        ctx.send(extra_cmd)
-        line, column, buffile, ts, ft = ctx._ask([
-            ctx.val.cursor_line,
-            ctx.val.cursor_column,
-            ctx.val.buffile,
-            ctx.val.timestamp,
-            ctx.opt.filetype
-        ], extra_manager=ctx.end_quote)
-        langserver = Langserver.for_filetype(ctx, ft, mock)
-        if not langserver:
-            ctx.release()
-            return lambda _: None
-        with tempfile.NamedTemporaryFile() as tmp:
-            ctx.evaluate('write ' + tmp.name, libkak.Flag('no-hooks'))
-            ctx.sync()
-            contents = libkak.decode(open(tmp.name, 'r').read())
-            ctx.release()
-        q = Queue()
-        pos = {'line': line - 1, 'character': column - 1}
-        uri = 'file://' + buffile
-        if _timestamps.get(buffile) == ts:
-            print('no need to send update')
-        else:
-            _timestamps[buffile] = ts
-            if uri in opened:
-                langserver.call('textDocument/didChange', {
-                    'textDocument': {'uri': uri, 'version': ts},
-                    'contentChanges': [{'text': contents}]
-                })(q.put)
-            else:
-                langserver.call('textDocument/didOpen', {
-                     'textDocument': {
-                         'uri': uri,
-                         'version': ts,
-                         'languageId': ft,
-                         'text': contents
-                     }
-                 })(q.put)
-                opened.add(uri)
-            q.get()
-        d = locals()
-        if method:
-            langserver.call(method, params(d))(q.put)
-            def _cont(k):
-                r = q.get()
-                print('got didX for', method)
-                return k(r, d)
-            return _cont
-        else:
-            return d
-
-
     hooks_setup = set()
 
 
-    @kak.cmd()
-    def lsp_sync(ctx):
+    # todo: split this into two (one jsonrpc-lsp related and one kak related)
+    def handler(method=None, make_params=None, params='0', before_sending='', call_immediately=False, _timestamps={}):
+        def inner(f):
+            args = [
+                ('line',      'kak_cursor_line',   int),
+                ('column',    'kak_cursor_column', int),
+                ('buffile',   'kak_buffile',       noop),
+                ('timestamp', 'kak_timestamp',     int),
+                ('filetype',  'kak_opt_filetype',  noop),
+                ('client',    'kak_client',        noop),
+                ('temp',      '1',                 noop),
+            ]
+
+            fifo = os.path.join(dir, f.__name__)
+
+            msg = "def -allow-override -params {params} -docstring {docstring} {name}".format(
+                name = f.__name__,
+                params = params,
+                docstring = single_quoted(f.__docstring__))
+
+            if call_immediately:
+                msg = "eval"
+
+            msg += r""" %(
+                    eval -draft %(
+                        {before_sending}
+                        %sh(
+                           temp=$(mktemp)
+                           echo eval -no-hooks write $temp
+                           params=""
+                           for param; do params="${{params}}_s${{param//_/_u}}" done
+                           params="${{params//\n/_n}}"
+                           echo {name}_continue $temp "${{params}}"
+                        )
+                    )
+                )
+
+                def -allow-override -hidden -params 2 {name}_continue %(
+                    %sh(
+                        echo "{argsplice}$2" > {fifo}
+                        # if we want a synchronous reply read from some
+                        # fifo here that python will write to
+                        # benefit: editor locks while waiting for the reply
+                        # disadvantage: locking could go wrong, or for too long,
+                        #               complicates implementation
+                    )
+                )
+                """.format(
+                    name = f.__name__,
+                    before_sending = before_sending,
+                    argsplice = '_s'.join('${' + splice + '//_/_u}'
+                                          for _, splice, _ in args),
+                    fifo = fifo)
+
+            pipe_to_kak(msg)
+
+            @fork
+            def listen():
+                with open(fifo, 'r') as fp:
+                    params = [v.replace('_n', '\n').replace('_u', '_')
+                              for v in fp.readline().split('_s')]
+                r = {}
+                actual_params = []
+                for arg, value in it.izip_longest(args, params)
+                    try:
+                        name, _, parse = arg
+                        r[name] = parse(value)
+                    except:
+                        actual_params.append(value)
+
+                r['pos'] = {'line': r['line'] - 1, 'character': r['column'] - 1}
+                r['uri'] = 'file://' + r['buffile']
+
+                langserver = Langserver.for_filetype(r['filetype'], mock)
+                if not langserver:
+                    return
+                r['langserver'] = langserver
+
+                q = Queue()
+
+                def sync_contents(filetype, buffile, timestamp, uri, temp):
+                    old_timestamp = _timestamps.get((filetype, buffile))
+                    if old_timestamp == timestamp:
+                        print('no need to send update')
+                    else:
+                        _timestamps[(filetype, buffile)] = timestamp
+                        with open(temp, 'r') as fp:
+                            contents = fp.read()
+                        if old_timestamp is None:
+                            langserver.call('textDocument/didOpen', {
+                                 'textDocument': {
+                                     'uri': uri,
+                                     'version': timestamp,
+                                     'languageId': filetype,
+                                     'text': contents
+                                 }
+                             })(q.put)
+                        else:
+                            langserver.call('textDocument/didChange', {
+                                'textDocument': {
+                                    'uri': uri,
+                                    'version': timestamp
+                                },
+                                'contentChanges': [{'text': contents}]
+                            })(q.put)
+                        q.get()
+
+                sync_contents(**r)
+                if method:
+                    langserver.call(method, make_params(**r))(q.put)
+                    r['result'] = q.get()
+                x = f(*actual_params, **r)
+                if x:
+                    pipe_to_kak(x)
+
+            def call_from_python(*args):
+                escaped = [single_quoted(arg) for arg in args]
+                pipe_to_kak(' '.join([f.__name__] + escaped))
+            return call_from_python
+
+        return inner
+
+
+    @handler()
+    def lsp_sync(buffile, langserver):
         """
         Synchronize the current file.
 
@@ -347,75 +418,50 @@ def main(kak, mock={}):
 
         Hooked automatically to NormalBegin and WinDisplay.
         """
-        ctx.echo(libkak.Flag('debug'), 'sync')
-        d = handler(ctx, None, {})
-        buf = d['buffile']
-        if buf not in hooks_setup:
-            hooks_setup.add(buf)
-            sig = d['langserver'].sig_help_chars
+        msg = 'echo -debug sync'
+        if buffile not in hooks_setup:
+            hooks_setup.add(buffile)
+            sig = langserver.sig_help_chars
             if sig:
-                hook = 'hook -group lsp buffer={} InsertChar [{}] lsp_signature_help'.format(buf, ''.join(sig))
-                print(hook)
-                ctx.send(hook)
+                msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_signature_help'.format(buffile, ''.join(sig))
             compl = d['langserver'].complete_chars
             if compl:
-                hook = 'hook -group lsp buffer={} InsertChar [{}] %[lsp_complete ""]'.format(buf, ''.join(compl))
-                print(hook)
-                ctx.send(hook)
-        ctx.release()
+                msg += '\nhook -group lsp buffer={} InsertChar [{}] %[lsp_complete ""]'.format(buffile, ''.join(compl))
+        return msg
 
 
-    @kak.cmd()
-    def lsp_signature_help(ctx, _char):
+    @handler('textDocument/signatureHelp',
+             lambda pos, uri:
+                {'textDocument': {'uri': uri},
+                 'position': pos})
+    def lsp_signature_help(pos, uri, result):
         """
         Write signature help by the cursor.
         """
-        @handler(ctx, 'textDocument/signatureHelp', lambda d: {
-            'textDocument': {'uri': d['uri']},
-            'position': d['pos']
-        })
-        def _(result, d):
-            pos = d['pos']
+        try:
+            active = result['signatures'][result['activeSignature']]
+            pn = result['activeParameter']
+            func_label = active.get('label', '')
+            params = active['parameters']
+            label = nice_sig(func_label, params, pn, pos)
+        except KeyError:
             try:
-                active = result['signatures'][result['activeSignature']]
-                pn = result['activeParameter']
-                func_label = active.get('label', '')
-                params = active['parameters']
-                label = nice_sig(func_label, params, pn, pos)
+                label = pyls_signatureHelp(result, pos)
             except KeyError:
-                try:
-                    label = pyls_signatureHelp(result, pos)
-                except KeyError:
-                    if not result.get('signatures'):
-                        label = ''
-                    else:
-                        label = str(result)
-            if label:
-                ctx.sync()
-                info_somewhere(ctx, label, pos, 'cursor')
-            ctx.release()
+                if not result.get('signatures'):
+                    label = ''
+                else:
+                    label = str(result)
+        return info_somewhere(label, pos, 'cursor')
 
-    """
-    @kak.hook('global', 'InsertChar', group='lsp')
-    def _(ctx, char):
-        ft = ctx.opt.filetype()
-        ls = Langserver.for_filetype(ctx, ft, mock)
-        if ls and char in ls.sig_help_chars:
-            ctx.send('lsp_signature_help')
-        ctx.release()
 
-    @kak.hook('global', 'InsertChar', group='lsp')
-    def _(ctx, char):
-        ft = ctx.opt.filetype()
-        ls = Langserver.for_filetype(ctx, ft, mock)
-        print('InsertChar', char, ft, ls, ls and ls.complete_chars)
-        if ls and char in ls.complete_chars:
-            ctx.send('lsp_complete ""')
-        ctx.release()
-    """
-
-    @kak.cmd()
-    def lsp_complete(ctx, extra_cmd):
+    @handler('textDocument/completion',
+             lambda pos, uri:
+                {'textDocument': {'uri': uri},
+                 'position': pos},
+             before_sending='%arg{1}',
+             params='1')
+    def lsp_complete(_, pos, timestamp, buffile, result):
         """
         Complete at the main cursor, after performing an optional
         extra_cmd in a -draft evalutaion context. The extra cmd can be
@@ -427,23 +473,14 @@ def main(kak, mock={}):
 
         Sets the variable lsp_completions.
         """
-        @handler(ctx, 'textDocument/completion', lambda d: {
-            'textDocument': {'uri': d['uri']},
-            'position': d['pos']
-        }, extra_cmd=extra_cmd)
         def _(result, d):
             pos = d['pos']
             cs = ':'.join(complete_items(result['items']))
-            compl = '{}@{}:{}'.format(format_pos(pos), d['ts'], cs)
-            buffile = ctx.val.buffile()
-            ctx.opt.assign('lsp_completions', compl,
-                           'set buffer=' + buffile)
-            ctx.release()
+            compl = '{}@{}:{}'.format(format_pos(pos), timestamp, cs)
+            return 'set buffer=' + buffile + ' lsp_completions ' + single_quoted(compl)
 
-    @kak.cmd()
-    def lsp_diagnostics(ctx, where,
-                        ts=kak.val.timestamp,
-                        line=kak.val.cursor_line):
+    @handler(params='1')
+    def lsp_diagnostics(where, timestamp, line):
         """
         Describe diagnostics for the cursor line somewhere
         ('cursor', 'info' or 'docsclient'.)
@@ -463,13 +500,10 @@ def main(kak, mock={}):
                         min_col = d['col']
                     msgs.append(d['message'])
                 pos = {'line': line - 1, 'character': min_col - 1}
-                info_somewhere(ctx, '\n'.join(msgs), pos, where)
-        ctx.release()
+                return info_somewhere('\n'.join(msgs), pos, where)
 
-    @kak.cmd()
-    def lsp_diagnostics_jump(ctx, direction,
-                             ts=kak.val.timestamp,
-                             line=kak.val.cursor_line):
+    @handler(params='1')
+    def lsp_diagnostics_jump(direction, timestamp, line):
         """
         Jump to next or prev diagnostic (relative to the main cursor line)
 
@@ -508,12 +542,17 @@ def main(kak, mock={}):
             if next_line:
                 y = next_line
                 x = diagnostics[y][0]['col']
-                ctx.select([((y, x), (y, x))])
+                return select([((y, x), (y, x))])
         else:
-            lsp_sync(ctx)
+            return 'lsp_sync'
 
-    @kak.cmd()
-    def lsp_hover(ctx, where):
+
+    @handler('textDocument/hover',
+             lambda pos, uri:
+                {'textDocument': {'uri': uri},
+                 'position': pos},
+             params='1')
+    def lsp_hover(where, pos, uri, result):
         """
         Display hover information somewhere ('cursor', 'info' or
         'docsclient'.)
@@ -524,103 +563,99 @@ def main(kak, mock={}):
             lsp_hover cursor
         }
         """
-        @handler(ctx, 'textDocument/hover', lambda d: {
-            'textDocument': {'uri': d['uri']},
-            'position': d['pos']
-        })
-        def _result(result, d):
-            pos = d['pos']
-            label = []
-            if not result:
-                return
-            contents = result['contents']
-            if not isinstance(contents, list):
-                contents = [contents]
-            for content in contents:
-                if isinstance(content, dict) and 'value' in content:
-                    label.append(content['value'])
-                else:
-                    # a string
-                    label.append(content)
-            label = '\n\n'.join(label)
-            info_somewhere(ctx, label, pos, where)
+        label = []
+        if not result:
+            return
+        contents = result['contents']
+        if not isinstance(contents, list):
+            contents = [contents]
+        for content in contents:
+            if isinstance(content, dict) and 'value' in content:
+                label.append(content['value'])
+            else:
+                label.append(content)
+        label = '\n\n'.join(label)
+        return info_somewhere(ctx, label, pos, where)
 
-    @kak.cmd()
-    def lsp_references(ctx):
+    @handler('textDocument/references',
+             lambda pos, uri:
+                {'textDocument': {'uri': uri},
+                 'position': pos,
+                 'includeDeclaration': True})
+    def lsp_references(uri, result):
         """
         Find the references to the identifier at the main cursor.
         """
-        @handler(ctx, 'textDocument/references', lambda d: {
-            'textDocument': {'uri': d['uri']},
-            'position': d['pos'],
-            'includeDeclaration': True
-        })
-        def _result(result, d):
-            c = []
-            other = 0
-            for loc in result:
-                if loc['uri'] == d['uri']:
-                    line0 = int(loc['range']['start']['line']) + 1
-                    col0 = int(loc['range']['start']['character']) + 1
-                    line1 = int(loc['range']['end']['line']) + 1
-                    col1 = int(loc['range']['end']['character'])
-                    c.append(((line0, col0), (line1, col1)))
-                else:
-                    other += 1
-            if c:
-                ctx.select(c)
-                if other:
-                    msg = 'Also at {} positions in other files'.format(other)
-                    ctx.echo(msg)
-                ctx.release()
-            else:
-                print('got no results', result)
-                ctx.release()
-
-    @kak.cmd()
-    def lsp_goto_definition(ctx):
-        """
-        Goto the definition of the identifier at the main cursor.
-        """
-        @handler(ctx, 'textDocument/definition', lambda d: {
-            'textDocument': {'uri': d['uri']},
-            'position': d['pos'],
-        })
-        def _result(result, d):
-
-            if 'uri' in result:
-                result = [result]
-
-            if not result:
-                ctx.sync()
-                ctx.echo(libkak.Flag('color', 'red'), "No results!")
-                ctx.release()
-                return
-
-            c = []
-            for loc in result:
+        c = []
+        other = 0
+        for loc in result:
+            if loc['uri'] == uri:
                 line0 = int(loc['range']['start']['line']) + 1
                 col0 = int(loc['range']['start']['character']) + 1
                 line1 = int(loc['range']['end']['line']) + 1
                 col1 = int(loc['range']['end']['character'])
-                c.append((loc['uri'], (line0, col0), (line1, col1)))
+                c.append(((line0, col0), (line1, col1)))
+            else:
+                other += 1
+        if c:
+            msg = select(c)
+            if other:
+                msg += '\necho Also at {} positions in other files'.format(other)
+            return msg
+        else:
+            print('got no results', result)
 
-            ctx.sync()
-            sel = ctx.menu([u'{}:{}'.format(uri, line0)
-                            for (uri, (line0, _), _) in c])
-            (uri, p0, p1) = c[sel]
+    @handler('textDocument/definition',
+             lambda pos, uri:
+                {'textDocument': {'uri': uri},
+                 'position': pos})
+    def lsp_goto_definition(ctx):
+        """
+        Goto the definition of the identifier at the main cursor.
+        """
+        if 'uri' in result:
+            result = [result]
+
+        if not result:
+            return 'echo -color -red No results!'
+
+        c = []
+        for loc in result:
+            line0 = int(loc['range']['start']['line']) + 1
+            col0 = int(loc['range']['start']['character']) + 1
+            line1 = int(loc['range']['end']['line']) + 1
+            col1 = int(loc['range']['end']['character'])
+            c.append((loc['uri'], (line0, col0), (line1, col1)))
+
+        options = []
+        for uri, p0, p1 in c:
             if uri.startswith('file://'):
                 uri = uri[len('file://'):]
-
-                ctx.send('edit', uri)
-                ctx.select([(p0, p1)])
+                action = 'edit {}; {}'.format(uri, select([(p0, p1)]))
             else:
-                ctx.echo(libkak.Flag('color', 'red'),
-                         "Cannot open {}".format(uri))
-            ctx.release()
+                action = 'echo -color red Cannot open {}'.format(uri)
+            line0, _ = p0
+            options.append((u'{}:{}'.format(uri, line0), action))
+        return menu(options)
 
-    kak.send('lsp_sync')
-    kak.release()
+
+    pipe_to_kak("""#kak
+    remove-hooks global lsp
+    try %{declare-option completions lsp_completions}
+    # set-option global completers option=lsp_completions'
+    try %{declare-option line-flags lsp_flags}
+    try %{add-highlighter flag_lines default lsp_flags}
+
+    hook -group lsp global InsertEnd .* lsp_sync
+    hook -group lsp global WinSetOption filetype=.* lsp_sync
+    hook -group lsp global WinDisplay .* lsp_sync
+
+    # sync with all open buffers (yes!)
+    %sh{
+        echo eval -buffer %{kak_buflist//:/,} lsp_sync
+    }
+    """)
+
 
 
 if __name__ == '__main__':
