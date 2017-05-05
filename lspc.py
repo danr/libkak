@@ -198,7 +198,7 @@ class Langserver(object):
             'rootUri': rootUri,
             'rootPath': pwd,
             'capabilities': {}
-        }, call_immediately=True)
+        })
         def initialized(result):
             try:
                 signatureHelp = result['capabilities']['signatureHelpProvider']
