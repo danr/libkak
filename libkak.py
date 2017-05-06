@@ -13,10 +13,7 @@ import six
 import sys
 import tempfile
 import time
-
-
-#############################################################################
-# Remote
+import utils
 
 
 class Remote(object):
@@ -24,7 +21,7 @@ class Remote(object):
         self.session = session
         self.pre = lambda _: '%sh('
         self.post = ')'
-        self.arg_config = arg_config.copy()
+        self.arg_config = {}
         self.sync_setup = False
         self.call_list = []
 
@@ -36,7 +33,7 @@ class Remote(object):
 
     def _make_async(r):
         r_ret = r.ret
-        r.ret = lambda: fork()(r_ret)
+        r.ret = lambda: utils.fork()(r_ret)
 
     @staticmethod
     def asynchronous(session):
@@ -59,10 +56,10 @@ class Remote(object):
         r = Remote(session)
         r.sync_setup = sync_setup
         def ret():
-            fork(loop=True)(r.listen)
+            utils.fork(loop=True)(r.listen)
             @functools.wraps(r.f)
             def call_from_python(client, *args):
-                escaped = [single_quoted(arg) for arg in args]
+                escaped = [utils.single_quoted(arg) for arg in args]
                 pipe(session, ' '.join([r.f.__name__] + escaped), client,
                      sync=sync_python_calls)
             return call_from_python
@@ -72,7 +69,7 @@ class Remote(object):
             s = 'def -allow-override -params {params} -docstring {docstring} {name}'
             s = s.format(name = f.__name__,
                          params = params,
-                         docstring = single_quoted(f.__doc__ or ''))
+                         docstring = utils.single_quoted(f.__doc__ or ''))
             if enum:
                 sh = "echo '" + '\n'.join(enum) + "'"
                 s += ' -shell-candidates %{' + sh + '} '
@@ -92,46 +89,42 @@ class Remote(object):
             names.add('client')
         return names
 
-    def _msg(self):
+    @staticmethod
+    def _msg(splices, fifo):
         underscores = []
         argsplice = []
-        for s in self.splices:
+        for s in splices:
             underscores.append('__' + s + '=${' + s + '//_/_u}')
             argsplice.append('${__' + s + '//$__newline/_n}')
         underscores = '\n'.join(underscores)
         argsplice = '_s'.join(argsplice)
 
-        return """__newline="\n"
-               __args=""
-               for __arg; do __args="${{__args}}_S${{__arg//_/_u}}"; done
-               {underscores}
-               echo -n "{argsplice}" > {fifo}
-            """.format(underscores=underscores,
-                       argsplice=argsplice,
-                       fifo=self.fifo)
+        m = ["__newline='\n'"]
+        if '__args' in splices:
+            m.append('__args=""')
+            m.append('for __arg; do __args="${__args}_S${__arg//_/_u}"; done')
+
+        m.append(underscores)
+        m.append('echo -n "' + argsplice + '" > ' + fifo)
+        return '\n'.join(m)
 
     def __call__(self, f):
         self.f = f
-
-        self.splices, self.parse = _argsetup(self._argnames(), self.arg_config)
-
+        splices, self.parse = _argsetup(self._argnames(), self.arg_config)
         self.fifo, self.fifo_cleanup = _mkfifo()
-
-        msg = self.pre(f) + self._msg() + self.post
-
+        msg = self.pre(f) + self._msg(splices, self.fifo) + self.post
         pipe(self.session, msg, sync=self.sync_setup)
-
         return self.ret()
 
     def listen(self):
         #_debug(self.fifo + ' waiting for line...')
         with open(self.fifo, 'r') as fp:
-            line = decode(fp.readline()).rstrip()
+            line = utils.decode(fp.readline()).rstrip()
             if line == '_q':
                 self.fifo_cleanup()
                 #_debug(self.fifo, 'demands quit')
                 raise RuntimeError('fifo demands quit')
-            #_debug(self.fifo + ' replied:' + repr(line))
+            # _debug(self.fifo + ' replied:' + repr(line))
 
         r = self.parse(line)
 
@@ -159,20 +152,20 @@ def pipe(session, msg, client=None, sync=False):
     ...     pipe(kak.pid, 'edit ' + tmp.name, 'unnamed0', sync=True)
     ...     pipe(kak.pid, 'exec itest<esc>', 'unnamed0')
     ...     pipe(kak.pid, 'write', 'unnamed0', sync=True)
-    ...     print(decode(tmp.read()).rstrip())
+    ...     print(utils.decode(tmp.read()).rstrip())
     ...     pipe(kak.pid, 'quit', 'unnamed0', sync=True)
     ...     kak.wait()
     test
     0
     """
     if client:
-        msg = u'eval -client {} {}'.format(client, single_quoted(msg))
+        msg = u'eval -client {} {}'.format(client, utils.single_quoted(msg))
     if sync:
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    #_debug(session, msg)
-    p.communicate(encode(msg))
+    # _debug(session, msg)
+    p.communicate(utils.encode(msg))
     if sync:
         #_debug(fifo + ' waiting for line...')
         with open(fifo, 'r') as fifo_fp:
@@ -205,13 +198,13 @@ def menu(options):
     >>> print(menu([('one', 'echo one'), ('two', 'echo two')]))
     menu -auto-single 'one' 'echo one' 'two' 'echo two'
     """
-    opts = join(map(single_quoted, it.chain(*options)))
+    opts = utils.join(map(utils.single_quoted, it.chain(*options)))
     return 'menu -auto-single ' + opts
 
 
 def complete(line, column, timestamp, completions):
     u"""
-    Format completion options for a Kakoune option.
+    Format completion for a Kakoune option.
 
     >>> print(complete(5, 20, 1234, [
     ...     ('__doc__', 'object’s docstring', '__doc__ (method)'),
@@ -219,9 +212,9 @@ def complete(line, column, timestamp, completions):
     ... ]))
     5.20@1234:__doc__|object’s docstring|__doc__ (method):\|\||logical or|\|\| (func\: infix)
     """
-    rows = (join((backslash_escape('|:', x) for x in c), sep='|')
+    rows = (utils.join((utils.backslash_escape('|:', x) for x in c), sep='|')
             for c in completions)
-    return u'{}.{}@{}:{}'.format(line, column, timestamp, join(rows, sep=':'))
+    return u'{}.{}@{}:{}'.format(line, column, timestamp, utils.join(rows, sep=':'))
 
 
 #############################################################################
@@ -260,21 +253,20 @@ def listof(p):
     ...     xs = [random_fragment() for _ in range(n)]
     ...     if xs and xs[-1] == '':
     ...         xs[-1] = 'c'
-    ...     exs = ':'.join(backslash_escape('\\:', s) for s in xs)
+    ...     exs = ':'.join(utils.backslash_escape('\\:', s) for s in xs)
     ...     xs2 = listof(string)(exs)
     ...     assert(xs == xs2)
     >>> for n in range(0, 10):
     ...     test(n)
 
     """
+    def rmlastcolon(s):
+        if s and s[-1] == ':':
+            return s[:-1]
+        else:
+            return s
 
     def inner(s):
-        def rmlastcolon(s):
-            if s and s[-1] == ':':
-                return s[:-1]
-            else:
-                return s
-
         ms = [m.group(0) for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
         ms = [m if i == len(ms) - 1 else rmlastcolon(m)
               for i, m in enumerate(ms)]
@@ -344,10 +336,15 @@ def _argsetup(argnames, config):
     args = []
     splices = []
     for name in argnames:
-        if name in config:
-            splice, parse = config[name]
+        try:
+            if name in config:
+                splice, parse = config[name]
+            else:
+                splice, parse = arg_config[name]
             splices.append(splice)
             args.append((name, parse))
+        except KeyError:
+            pass
     def parse(line):
         params = [v.replace('_n', '\n').replace('_u', '_')
                   for v in line.split('_s')]
@@ -357,85 +354,13 @@ def _argsetup(argnames, config):
 
 
 #############################################################################
-# Public utils
-
-
-def fork(loop=False):
-    def decorate(f):
-        def target():
-            try:
-                while True:
-                    f()
-                    if not loop:
-                        break
-            except RuntimeError:
-                pass
-        thread = Thread(target=target)
-        thread.daemonize = True
-        thread.start()
-    return decorate
-
-
-def join(words, sep=u' '):
-    """
-    Join strings or bytes into a string, returning a string.
-    """
-    return decode(sep).join(decode(w) for w in words)
-
-
-def encode(s):
-    """
-    Encode a unicode string into bytes.
-    """
-    if isinstance(s, six.binary_type):
-        return s
-    elif isinstance(s, six.string_types):
-        return s.encode('utf-8')
-    else:
-        raise ValueError('Expected string or bytes')
-
-
-def decode(s):
-    """
-    Decode into a string (a unicode object).
-    """
-    if isinstance(s, six.binary_type):
-        return s.decode('utf-8')
-    elif isinstance(s, six.string_types):
-        return s
-    else:
-        raise ValueError('Expected string or bytes')
-
-
-def single_quote_escape(string):
-    """
-    Backslash-escape ' and \ in Kakoune style .
-    """
-    return string.replace("\\'", "\\\\'").replace("'", "\\'")
-
-
-def single_quoted(string):
-    u"""
-    The string wrapped in single quotes and escaped in Kakoune style.
-
-    https://github.com/mawww/kakoune/issues/1049
-
-    >>> print(single_quoted(u"i'ié"))
-    'i\\'ié'
-    """
-    return u"'" + single_quote_escape(string) + u"'"
-
-
-def backslash_escape(cs, s):
-    for c in cs:
-        s = s.replace(c, "\\" + c)
-    return s
-
+# Private utils
 
 
 def _safe_kwcall(f, d):
     args = inspect.getargspec(f).args
     return f(**{k: v for k, v in six.iteritems(d) if k in args})
+
 
 def _mkfifo(active_fifos = {}):
     """
@@ -462,6 +387,14 @@ def _fifo_cleanup():
             fd.flush()
 
 
+def _debug(*xs):
+    print(*xs, file=sys.stderr)
+
+
+#############################################################################
+# Tests
+
+
 def headless(ui='dummy'):
     """
     Start a headless Kakoune process.
@@ -471,16 +404,12 @@ def headless(ui='dummy'):
     return p
 
 
-def _debug(*xs):
-    print(*xs, file=sys.stderr)
-
-
 def test_remote_commands_sync():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid, sync_setup=True)
     ... def write_position(line, column, reply_sync):
-    ...      reply_sync(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    ...      reply_sync(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
@@ -524,7 +453,7 @@ def test_remote_commands_async():
     >>> kak = headless()
     >>> @Remote.command(kak.pid)
     ... def write_position(reply, line, column):
-    ...      reply(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    ...      reply(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> pipe(kak.pid, 'write_position', 'unnamed0')
     >>> time.sleep(0.02)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
@@ -565,6 +494,10 @@ def test_commands_with_params():
     >>> _fifo_cleanup()
     """
     pass
+
+
+#############################################################################
+# Main
 
 
 if __name__ == '__main__':
