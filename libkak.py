@@ -318,16 +318,14 @@ def remote(session,
                 r[name] = parse(value)
 
             try:
+                r['pipe'] = lambda msg: pipe(session, msg, r['client'])
+                r['sync_pipe'] = lambda msg: pipe(session, msg, r['client'], sync=True)
                 if before_decorated:
                     r['r'] = r  # so that before_decorated may modify it
                     safe_kwcall(before_decorated, r)
 
-                x = safe_kwcall(f, r)
-                if oneshot:
-                    return x
-                elif x:
-                    pipe(session, x, r['client'])
-                    # cannot be synced without queue as it is on a forked thread
+                return safe_kwcall(f, r)
+                # cannot be synced without queue as it is on a forked thread
             except TypeError as e:
                 print(str(e), file=sys.stderr)
 
@@ -336,18 +334,14 @@ def remote(session,
             if 'oneshot' in sync:
                 return listen()
             else:
-                @fork()
-                def _():
-                    x = listen()
-                    if x:
-                        pipe(session, listen(), oneshot_client)
+                fork()(listen)
         else:
             fork(loop=True)(listen)
             @functools.wraps(f)
             def call_from_python(client, *args):
                 escaped = [single_quoted(arg) for arg in args]
                 pipe(session, ' '.join([f.__name__] + escaped), client,
-                     sync='decorated' in sync)
+                     sync='call_from_python' in sync)
             return call_from_python
 
     return decorate
@@ -379,9 +373,9 @@ def headless(ui='dummy'):
 def test_remote_commands_sync():
     u"""
     >>> kak = libkak.headless()
-    >>> @libkak.remote(kak.pid, sync=('setup', 'decorated'))
-    ... def write_position(line, column):
-    ...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
+    >>> @libkak.remote(kak.pid, sync='setup')
+    ... def write_position(line, column, sync_pipe):
+    ...      sync_pipe(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
     >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
@@ -426,8 +420,8 @@ def test_remote_commands_async():
     u"""
     >>> kak = libkak.headless()
     >>> @libkak.remote(kak.pid)
-    ... def write_position(line, column):
-    ...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
+    ... def write_position(pipe, line, column):
+    ...      pipe(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0')
     >>> time.sleep(0.02)
     >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0')
@@ -449,7 +443,7 @@ def test_remote_commands_async():
 def test_commands_with_params():
     u"""
     >>> kak = libkak.headless()
-    >>> @libkak.remote(kak.pid, params='2..', sync='decorated')
+    >>> @libkak.remote(kak.pid, params='2..', sync='call_from_python')
     ... def test(arg1, arg2, args):
     ...      print(', '.join((arg1, arg2) + args[2:]))
     >>> test(None, 'one', 'two', 'three', 'four')
