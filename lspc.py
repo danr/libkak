@@ -1,15 +1,17 @@
+# -*- coding: utf-8 -*-
+
 from __future__ import print_function
+from collections import defaultdict, OrderedDict
+from six.moves.queue import Queue
 from subprocess import Popen, PIPE
-import sys
+from threading import Thread
+import itertools as it
 import json
 import libkak
 import os
-import tempfile
-from multiprocessing import Queue  # todo: is there a lighter Queue in threading?
-from collections import defaultdict, OrderedDict
-from threading import Thread
 import six
-import itertools as it
+import sys
+import tempfile
 
 
 def jsonrpc(obj):
@@ -19,43 +21,15 @@ def jsonrpc(obj):
     return msg.encode('utf-8')
 
 
-def select(cursors):
-    return ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos)) for pos in cursors)
-
-
-def menu(options):
-    return 'menu -auto-single ' + ' '.join(it.chain(*x) for x in options)
-
-
-def esc(cs, s):
-    for c in cs:
-        s = s.replace(c, "\\" + c)
-    return s
-
-
-def single_quote_escape(string):
-    """
-    Backslash-escape ' and \.
-    """
-    return string.replace(u"\\'", u"\\\\'").replace(u"'", u"\\'")
-
-
-def single_quoted(string):
-    u"""
-    The string wrapped in single quotes and escaped.
-
-    >>> print(single_quoted(u"i'ié"))
-    'i\\'ié'
-    """
-    return u"'" + single_quote_escape(string) + u"'"
-
-
 def format_pos(pos):
     """
     >>> format_pos({'line': 5, 'character': 0})
     6.1
     """
     return '{}.{}'.format(pos['line'] + 1, pos['character'] + 1)
+
+
+somewhere = 'cursor info docsclient'.split()
 
 
 def info_somewhere(msg, pos, where):
@@ -83,14 +57,11 @@ def info_somewhere(msg, pos, where):
 
 
 def complete_item(item):
-    return (item['label'],
-            '{}\n\n{}'.format(item['detail'], item['documentation']),
-            '{} [{}]'.format(item['label'], item.get('kind', '?')))
-
-
-def complete_items(items):
-    return ('|'.join(esc('|:', x) for x in complete_item(item))
-            for item in items)
+    return (
+        item['label'],
+        '{}\n\n{}'.format(item['detail'], item['documentation']),
+        '{} [{}]'.format(item['label'], item.get('kind', '?'))
+    )
 
 
 def pyls_signatureHelp(result, pos):
@@ -218,7 +189,7 @@ class Langserver(object):
                     else:
                         cb(msg.get('result'))
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    @libkak.remote(self.session, call_immediately=True)
+                    @libkak.remote(self.session, oneshot=True)
                     def _(buffile, buffile, timestamp):
                         msg = msg['params']
                         if msg['uri'] == 'file://' + buffile:
@@ -250,11 +221,6 @@ def main(session, mock={}):
     @type kak: libkak.Kak
     """
 
-    def pipe_to_kak(msg):
-        p=Popen(['kak', '-p', session.rstrip()], stdin=PIPE)
-        print(msg)
-        p.communicate(msg.encode('utf-8'))
-
     diagnostics = defaultdict(list)
     hooks_setup = set()
 
@@ -282,16 +248,9 @@ def main(session, mock={}):
             else:
                 timestamps[(filetype, buffile)] = timestamp
                 with tempfile.NamedTemporaryFile() as tmp:
-                    fifo, fifo_cleanup = libkak.mkfifo()
-                    pipe_to_kak(
-                        session, """eval -client {} -no-hooks %(
-                                    write {}
-                                    %sh(echo done > {})
-                                 )""".format(client, tmp.name, fifo2))
-                    with open(fifo, 'r') as fifo_fp:
-                        fifo_fp.readline()
-                        contents = open(tmp.name, 'r').read()
-                    fifo_cleanup()
+                    write = "eval -no-hooks 'write {}'".format(tmp.name)
+                    libkak.pipe(session, write, client=client, sync=True)
+                    contents = open(tmp.name, 'r').read()
                 if old_timestamp is None:
                     langserver.call('textDocument/didOpen', {
                          'textDocument': {
@@ -317,7 +276,7 @@ def main(session, mock={}):
 
         return sync
 
-    def handler(method=None, make_params=None, params='0', oneshot=False):
+    def handler(method=None, make_params=None, params='0', enum=None):
         def decorate(f):
             def modsh(msg):
                 return """
@@ -332,13 +291,24 @@ def main(session, mock={}):
                     done <<< "$kak_opt_lsp_cmds"
                 """
 
+            if enum:
+                sh = "echo '" + '\n'.join(enum) + "'"
+                def_quoting = (' -shell-candidates %{' + sh + '} %(', ')')
+            else:
+                def_quoting = ('%(', ')')
+
             return libkak.remote(session,
-                                 oneshot=oneshot,
                                  modsh=modsh,
+                                 def_quoting=def_quoting
                                  before_decorated=make_sync(method, make_params),
-                                 more_quickargs={'cmd': cmd},
+                                 more_quickargs={'cmd': ('cmd', libkak.string)},
                                  params=params)(f)
         return decorate
+
+    @remote(session)
+    def lsp_sync_all(buflist):
+        buffers = ','.join(map(singe_quoted, buflist))
+        return 'eval -buffer ' + buffers + ' lsp_sync'
 
     @handler()
     def lsp_sync(buffile, langserver):
@@ -368,7 +338,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos},
-             params='0..1')
+             params='0..1', enum=somewhere)
     def lsp_signature_help(arg1, pos, uri, result):
         """
         Write signature help by the cursor.
@@ -394,7 +364,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos})
-    def lsp_complete(pos, timestamp, buffile, result):
+    def lsp_complete(line, column, timestamp, buffile, result):
         """
         Complete at the main cursor.
 
@@ -404,11 +374,11 @@ def main(session, mock={}):
 
         (Sets the variable lsp_completions.)
         """
-        cs = ':'.join(complete_items(result['items']))
-        compl = '{}@{}:{}'.format(format_pos(pos), timestamp, cs)
-        return 'set buffer=' + buffile + ' lsp_completions ' + single_quoted(compl)
+        cs = map(complete_item, result['items'])
+        s = libkak.single_quoted(complete(line, column, timestamp, cs))
+        return 'set buffer=' + buffile + ' lsp_completions ' + s
 
-    @handler(params='1')
+    @handler(params='1', enum=somewhere)
     def lsp_diagnostics(arg1, timestamp, line, buffile, langserver):
         """
         Describe diagnostics for the cursor line somewhere
@@ -433,7 +403,7 @@ def main(session, mock={}):
                 pos = {'line': line - 1, 'character': min_col - 1}
                 return info_somewhere('\n'.join(msgs), pos, where)
 
-    @handler(params='0..1')
+    @handler(params='0..1', enum=('next', 'prev'))
     def lsp_diagnostics_jump(arg1, timestamp, line, buffile, langserver):
         """
         Jump to next or prev diagnostic (relative to the main cursor line)
@@ -475,7 +445,7 @@ def main(session, mock={}):
             if next_line:
                 y = next_line
                 x = diag[y][0]['col']
-                return select([((y, x), (y, x))])
+                return libkak.select([((y, x), (y, x))])
         else:
             return 'lsp_sync'
 
@@ -483,7 +453,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos},
-             params='0..1')
+             params='0..1', enum=somewhere)
     def lsp_hover(arg1, pos, uri, result):
         """
         Display hover information somewhere ('cursor', 'info' or
@@ -530,7 +500,7 @@ def main(session, mock={}):
             else:
                 other += 1
         if c:
-            msg = select(c)
+            msg = libkak.select(c)
             if other:
                 msg += '\necho Also at {} positions in other files'.format(other)
             return msg
@@ -563,12 +533,12 @@ def main(session, mock={}):
         for uri, p0, p1 in c:
             if uri.startswith('file://'):
                 uri = uri[len('file://'):]
-                action = 'edit {}; {}'.format(uri, select([(p0, p1)]))
+                action = 'edit {}; {}'.format(uri, libkak.select([(p0, p1)]))
             else:
                 action = 'echo -color red Cannot open {}'.format(uri)
             line0, _ = p0
             options.append((u'{}:{}'.format(uri, line0), action))
-        return menu(options)
+        return libkak.menu(options)
 
 
     pipe_to_kak("""#kak

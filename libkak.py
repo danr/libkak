@@ -1,32 +1,56 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import print_function
-import inspect
-import sys
-import os
-import functools
+from six.moves.queue import Queue
 from subprocess import Popen, PIPE
 from threading import Thread
-from six.moves.queue import Queue
+import functools
+import inspect
 import itertools as it
-import time
-import six
-import tempfile
+import os
 import re
+import six
+import sys
+import tempfile
+import time
 
 
-def pipe(session, msg, client=None):
+def select(cursors):
+    """
+    >>> print(select([((1,2),(1,4)), ((3,1),(5,72))]))
+    1.2,1.4:3.1,5.72
+    """
+    return ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos)) for pos in cursors)
+
+
+def menu(options):
+    """
+    >>> print(menu([('one', 'echo one'), ('two', 'echo two')]))
+    menu -auto-single 'one' 'echo one' 'two' 'echo two'
+    """
+    opts = join(map(single_quoted, it.chain(*options)))
+    return 'menu -auto-single ' + opts
+
+
+def pipe(session, msg, client=None, sync=False):
     if client:
         msg = u'eval -client {} {}'.format(client, single_quoted(msg))
-
+    if sync:
+        fifo, fifo_cleanup = mkfifo()
+        msg += u'\n%sh(echo done > {})'.format(fifo)
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
     #print(session, msg, file=sys.stderr)
     p.communicate(encode(msg))
+    if sync:
+        #print(fifo + ' waiting for line...', file=sys.stderr)
+        with open(fifo, 'r') as fifo_fp:
+            fifo_fp.readline()
+        fifo_cleanup()
 
 
 def join(words, sep=u' '):
     """
-    Join strings or bytes into a string.
+    Join strings or bytes into a string, returning a string.
     """
     return decode(sep).join(decode(w) for w in words)
 
@@ -57,19 +81,36 @@ def decode(s):
 
 def single_quote_escape(string):
     """
-    Backslash-escape ' and \.
+    Backslash-escape ' and \ in Kakoune style .
     """
     return string.replace("\\'", "\\\\'").replace("'", "\\'")
 
 
 def single_quoted(string):
     u"""
-    The string wrapped in single quotes and escaped.
+    The string wrapped in single quotes and escaped in Kakoune style.
+
+    https://github.com/mawww/kakoune/issues/1049
 
     >>> print(single_quoted(u"i'ié"))
     'i\\'ié'
     """
     return u"'" + single_quote_escape(string) + u"'"
+
+
+def complete(line, column, timestamp, completions):
+    u"""
+    Format completion options for a Kakoune option.
+
+    >>> print(complete(5, 20, 1234, [
+    ...     ('__doc__', 'object’s docstring', '__doc__ (method)'),
+    ...     ('||', 'logical or', '|| (func: infix)')
+    ... ]))
+    5.20@1234:__doc__|object’s docstring|__doc__ (method):\|\||logical or|\|\| (func\: infix)
+    """
+    rows = (join((backslash_escape('|:', x) for x in c), sep='|')
+            for c in completions)
+    return u'{}.{}@{}:{}'.format(line, column, timestamp, join(rows, sep=':'))
 
 
 def backslash_escape(cs, s):
@@ -177,7 +218,7 @@ quickargs = {
 }
 
 
-def fork(loop):
+def fork(loop=False):
     def decorate(f):
         def target():
             try:
@@ -207,7 +248,8 @@ def remote(session,
            quickargs=quickargs,
            more_quickargs={},
            before_decorated=None,
-           params='0'):
+           params='0',
+           sync=[]):
 
     def decorate(f):
 
@@ -255,9 +297,8 @@ def remote(session,
             head = 'eval -client ' + oneshot_client + ' '
             msg = head + def_quoting[0] + msg + def_quoting[1]
 
-        pipe(session, msg)
+        pipe(session, msg, sync='setup' in sync)
 
-        @fork(loop = not oneshot)
         def listen():
             #print(fifo + ' waiting for line...', file=sys.stderr)
             with open(fifo, 'r') as fp:
@@ -282,19 +323,31 @@ def remote(session,
                     safe_kwcall(before_decorated, r)
 
                 x = safe_kwcall(f, r)
-                if x:
+                if oneshot:
+                    return x
+                elif x:
                     pipe(session, x, r['client'])
+                    # cannot be synced without queue as it is on a forked thread
             except TypeError as e:
                 print(str(e), file=sys.stderr)
 
 
         if oneshot:
-            return None
+            if 'oneshot' in sync:
+                return listen()
+            else:
+                @fork()
+                def _():
+                    x = listen()
+                    if x:
+                        pipe(session, listen(), oneshot_client)
         else:
+            fork(loop=True)(listen)
             @functools.wraps(f)
             def call_from_python(client, *args):
                 escaped = [single_quoted(arg) for arg in args]
-                pipe(session, ' '.join([f.__name__] + escaped), client)
+                pipe(session, ' '.join([f.__name__] + escaped), client,
+                     sync='decorated' in sync)
             return call_from_python
 
     return decorate
@@ -323,18 +376,43 @@ def headless(ui='dummy'):
     return p
 
 
+def test_remote_commands_sync():
+    u"""
+    >>> kak = libkak.headless()
+    >>> @libkak.remote(kak.pid, sync=('setup', 'decorated'))
+    ... def write_position(line, column):
+    ...      return join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep='')
+    >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
+    >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
+    >>> write_position('unnamed0')
+    >>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0', sync=True)
+    >>> print(libkak.remote(kak.pid, oneshot=True,
+    ...               oneshot_client='unnamed0', sync='oneshot')(
+    ...     lambda selection: selection))
+    1:1, 1:5
+    >>> q = Queue()
+    >>> libkak.remote(kak.pid, oneshot=True,
+    ...               oneshot_client='unnamed0')(
+    ...     lambda selection: q.put(selection))
+    >>> print(q.get())
+    1:1, 1:5
+    >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
+    >>> kak.wait()
+    0
+    >>> fifo_cleanup()
+    """
+    pass
+
+
 def test_unicode_and_escaping():
     u"""
     >>> kak = libkak.headless()
     >>> libkak.pipe(kak.pid, u'exec iapa_bepa<ret>åäö_s_u_n<esc>%H', 'unnamed0')
-    >>> q = Queue()
-    >>> call = libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')
-    >>> call(lambda selection: q.put(selection))
-    >>> print(q.get())
+    >>> call = libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0', sync='oneshot')
+    >>> print(call(lambda selection: selection))
     apa_bepa
     åäö_s_u_n
-    >>> call(lambda selection_desc: q.put(selection_desc))
-    >>> print(q.get())
+    >>> print(call(lambda selection_desc: selection_desc))
     ((1, 1), (2, 12))
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
     >>> kak.wait()
@@ -344,7 +422,7 @@ def test_unicode_and_escaping():
     pass
 
 
-def test_remote_commands():
+def test_remote_commands_async():
     u"""
     >>> kak = libkak.headless()
     >>> @libkak.remote(kak.pid)
@@ -371,19 +449,15 @@ def test_remote_commands():
 def test_commands_with_params():
     u"""
     >>> kak = libkak.headless()
-    >>> q = Queue()
-    >>> @libkak.remote(kak.pid, params='2..')
+    >>> @libkak.remote(kak.pid, params='2..', sync='decorated')
     ... def test(arg1, arg2, args):
-    ...      q.put((arg1, arg2) + args[2:])
+    ...      print(', '.join((arg1, arg2) + args[2:]))
     >>> test(None, 'one', 'two', 'three', 'four')
-    >>> print(', '.join(q.get()))
     one, two, three, four
     >>> test(None, 'a\\nb', 'c_d', 'e_sf', 'g_u_n__ __n_S_s__Sh')
-    >>> print(', '.join(q.get()))
     a
     b, c_d, e_sf, g_u_n__ __n_S_s__Sh
-    >>> libkak.pipe(kak.pid, "test 'a\\nb' c_d e_sf 'g_u_n__ __n_S_s__Sh'")
-    >>> print(', '.join(q.get()))
+    >>> libkak.pipe(kak.pid, "test 'a\\nb' c_d e_sf 'g_u_n__ __n_S_s__Sh'", sync=True)
     a
     b, c_d, e_sf, g_u_n__ __n_S_s__Sh
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
