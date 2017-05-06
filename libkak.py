@@ -15,6 +15,10 @@ import tempfile
 import time
 
 
+def debug(*xs, **kws):
+    print(*xs, **kws, file=sys.stderr)
+
+
 def select(cursors):
     """
     >>> print(select([((1,2),(1,4)), ((3,1),(5,72))]))
@@ -39,13 +43,14 @@ def pipe(session, msg, client=None, sync=False):
         fifo, fifo_cleanup = mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    #print(session, msg, file=sys.stderr)
+    #debug(session, msg)
     p.communicate(encode(msg))
     if sync:
-        #print(fifo + ' waiting for line...', file=sys.stderr)
+        #debug(fifo + ' waiting for line...')
         with open(fifo, 'r') as fifo_fp:
             fifo_fp.readline()
         fifo_cleanup()
+        #debug(fifo + ' done')
 
 
 def join(words, sep=u' '):
@@ -218,6 +223,22 @@ quickargs = {
 }
 
 
+def _argsetup(argnames, qa):
+    args = []
+    splices = []
+    for name in argnames:
+        if name in qa:
+            splice, parse = qa[name]
+            splices.append(splice)
+            args.append((name, parse))
+    def parse(line):
+        params = [v.replace('_n', '\n').replace('_u', '_')
+                  for v in line.split('_s')]
+        return {name: parse(value)
+                for (name, parse), value in zip(args, params)}
+    return splices, parse
+
+
 def fork(loop=False):
     def decorate(f):
         def target():
@@ -239,112 +260,121 @@ def safe_kwcall(f, d):
     return f(**{k: v for k, v in six.iteritems(d) if k in args})
 
 
-def remote(session,
-           oneshot=False,
-           oneshot_client=None,
-           modsh=None,
-           def_quoting=('%(', ')'),
-           sh_quoting=('%sh(', ')'),
-           quickargs=quickargs,
-           more_quickargs={},
-           before_decorated=None,
-           params='0',
-           sync=[]):
-
-    def decorate(f):
-
-        argspecs = inspect.getargspec(f).args
-        if before_decorated:
-            argspecs += inspect.getargspec(before_decorated).args
-
-        if 'client' not in argspecs:
-            argspecs += ['client']
-
-        qa = dict(quickargs, **more_quickargs)
-        args = []
-        for arg in argspecs:
-            if arg in qa:
-                splice, parse = qa[arg]
-                args.append((arg, splice, parse))
-
-        fifo, fifo_cleanup = mkfifo()
-
-        msg = """__newline="\n"
-               __args=""
-               for __arg; do __args="${{__args}}_S${{__arg//_/_u}}"; done
-               {underscores}
-               echo -n "{argsplice}" > {fifo}
-            """.format(
-                underscores = '\n'.join('__' + splice + '=${' + splice + '//_/_u}'
-                                        for _, splice, _ in args),
-                argsplice = '_s'.join('${__' + splice + '//$__newline/_n}'
-                                      for _, splice, _ in args),
-                fifo = fifo)
-
-        if modsh:
-            msg = modsh(msg)
-
-        msg = sh_quoting[0] + msg + sh_quoting[1]
-
-        if not oneshot:
-            head = "def -allow-override -params {params} -docstring {docstring} {name} ".format(
-                name = f.__name__,
-                params = params,
-                docstring = single_quoted(f.__doc__ or ''))
-            msg = head + def_quoting[0] + msg + def_quoting[1]
-
-        if oneshot and oneshot_client:
-            head = 'eval -client ' + oneshot_client + ' '
-            msg = head + def_quoting[0] + msg + def_quoting[1]
-
-        pipe(session, msg, sync='setup' in sync)
-
-        def listen():
-            #print(fifo + ' waiting for line...', file=sys.stderr)
-            with open(fifo, 'r') as fp:
-                line = decode(fp.readline()).rstrip()
-                if line == '_q':
-                    fifo_cleanup()
-                    raise RuntimeError('fifo demands quit')
-                #print(fifo + ' replied:' + repr(line), file=sys.stderr)
-                params = [v.replace('_n', '\n').replace('_u', '_')
-                          for v in line.split('_s')]
-            #print(fifo + ' replied:', params, file=sys.stderr)
-            if oneshot:
-                fifo_cleanup()
-            r = {}
-            for arg, value in zip(args, params):
-                name, _, parse = arg
-                r[name] = parse(value)
-
-            try:
-                r['pipe'] = lambda msg: pipe(session, msg, r['client'])
-                r['sync_pipe'] = lambda msg: pipe(session, msg, r['client'], sync=True)
-                if before_decorated:
-                    r['r'] = r  # so that before_decorated may modify it
-                    safe_kwcall(before_decorated, r)
-
-                return safe_kwcall(f, r)
-                # cannot be synced without queue as it is on a forked thread
-            except TypeError as e:
-                print(str(e), file=sys.stderr)
+def remote_def(session, params='0', enum=[], sync_python_calls=False, sync_setup=False):
+    r = remote(session, sync_setup=sync_setup)
+    def ret():
+        fork(loop=True)(r.listen)
+        @functools.wraps(r.f)
+        def call_from_python(client, *args):
+            escaped = [single_quoted(arg) for arg in args]
+            pipe(session, ' '.join([r.f.__name__] + escaped), client,
+                 sync=sync_python_calls)
+        return call_from_python
+    r.ret = ret
+    r_pre = r.pre
+    def pre(f):
+        s = 'def -allow-override -params {params} -docstring {docstring} {name}'
+        s = s.format(name = f.__name__,
+                     params = params,
+                     docstring = single_quoted(f.__doc__ or ''))
+        if enum:
+            sh = "echo '" + '\n'.join(enum) + "'"
+            s += ' -shell-candidates %{' + sh + '} '
+        s += ' %('
+        s += r_pre(f)
+        return s
+    r.pre = pre
+    r.post += ')'
+    return r
 
 
-        if oneshot:
-            if 'oneshot' in sync:
-                return listen()
-            else:
-                fork()(listen)
-        else:
-            fork(loop=True)(listen)
-            @functools.wraps(f)
-            def call_from_python(client, *args):
-                escaped = [single_quoted(arg) for arg in args]
-                pipe(session, ' '.join([f.__name__] + escaped), client,
-                     sync='call_from_python' in sync)
-            return call_from_python
+def _remote_msg(fifo, splices):
+    underscores = []
+    argsplice = []
+    for s in splices:
+        underscores.append('__' + s + '=${' + s + '//_/_u}')
+        argsplice.append('${__' + s + '//$__newline/_n}')
+    underscores = '\n'.join(underscores)
+    argsplice = '_s'.join(argsplice)
 
-    return decorate
+    return """__newline="\n"
+           __args=""
+           for __arg; do __args="${{__args}}_S${{__arg//_/_u}}"; done
+           {underscores}
+           echo -n "{argsplice}" > {fifo}
+        """.format(fifo=fifo, underscores=underscores, argsplice=argsplice)
+
+
+class remote(object):
+    def __init__(self, session, sync_setup=False):
+        self.session     = session
+        self.pre = lambda _: '%sh('
+        self.post = ')'
+        self.quickargs = quickargs.copy()
+        self.sync_setup = sync_setup
+        self.call_list = []
+
+        def ret():
+            x = self.listen()
+            self.fifo_cleanup()
+            return x
+        self.ret = ret
+
+    def asynchronous(r):
+        r_ret = r.ret
+        r.ret = lambda: fork()(r_ret)
+        return r
+
+    def onclient(r, client=''):
+        r_pre = r.pre
+        r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
+        r.post = ')' + r.post
+        return r
+
+    def argnames(self):
+        names = set(inspect.getargspec(self.f).args)
+        for g in self.call_list:
+            names.extend(inspect.getargspec(g).args)
+
+        if 'client' not in names:
+            names.add('client')
+        return names
+
+    def __call__(self, f):
+        self.f = f
+
+        splices, self.parse = _argsetup(self.argnames(), self.quickargs)
+
+        self.fifo, self.fifo_cleanup = mkfifo()
+
+        msg = self.pre(f) + _remote_msg(self.fifo, splices) + self.post
+
+        pipe(self.session, msg, sync=self.sync_setup)
+
+        return self.ret()
+
+    def listen(self):
+        #debug(self.fifo + ' waiting for line...')
+        with open(self.fifo, 'r') as fp:
+            line = decode(fp.readline()).rstrip()
+            if line == '_q':
+                self.fifo_cleanup()
+                #debug(self.fifo, 'demands quit')
+                raise RuntimeError('fifo demands quit')
+            #debug(self.fifo + ' replied:' + repr(line))
+
+        r = self.parse(line)
+
+        try:
+            r['reply'] = lambda msg: pipe(self.session, msg, r['client'])
+            r['reply_sync'] = lambda msg: pipe(self.session, msg, r['client'], sync=True)
+            r['r'] = r
+            for g in self.call_list:
+                safe_kwcall(g, r)
+
+            return safe_kwcall(self.f, r)
+        except TypeError as e:
+            print(str(e), file=sys.stderr)
 
 
 def mkfifo(active_fifos = {}):
@@ -359,10 +389,11 @@ def mkfifo(active_fifos = {}):
     return fifo, rm
 
 
-def fifo_cleanup():
+def _fifo_cleanup():
     for x in list(six.iterkeys(mkfifo.__defaults__[0])):
-        open(x, 'w').write('_q\n')
-
+        with open(x, 'w') as fd:
+            fd.write('_q\n')
+            fd.flush()
 
 def headless(ui='dummy'):
     p = Popen(['kak','-n','-ui',ui])
@@ -373,27 +404,25 @@ def headless(ui='dummy'):
 def test_remote_commands_sync():
     u"""
     >>> kak = libkak.headless()
-    >>> @libkak.remote(kak.pid, sync='setup')
-    ... def write_position(line, column, sync_pipe):
-    ...      sync_pipe(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    >>> @libkak.remote_def(kak.pid, sync_setup=True)
+    ... def write_position(line, column, reply_sync):
+    ...      reply_sync(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
     >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
     >>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0', sync=True)
-    >>> print(libkak.remote(kak.pid, oneshot=True,
-    ...               oneshot_client='unnamed0', sync='oneshot')(
+    >>> print(libkak.remote(kak.pid).onclient('unnamed0')(
     ...     lambda selection: selection))
     1:1, 1:5
     >>> q = Queue()
-    >>> libkak.remote(kak.pid, oneshot=True,
-    ...               oneshot_client='unnamed0')(
+    >>> libkak.remote(kak.pid).onclient('unnamed0').asynchronous()(
     ...     lambda selection: q.put(selection))
     >>> print(q.get())
     1:1, 1:5
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
     >>> kak.wait()
     0
-    >>> fifo_cleanup()
+    >>> _fifo_cleanup()
     """
     pass
 
@@ -402,7 +431,7 @@ def test_unicode_and_escaping():
     u"""
     >>> kak = libkak.headless()
     >>> libkak.pipe(kak.pid, u'exec iapa_bepa<ret>åäö_s_u_n<esc>%H', 'unnamed0')
-    >>> call = libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0', sync='oneshot')
+    >>> call = libkak.remote(kak.pid).onclient('unnamed0')
     >>> print(call(lambda selection: selection))
     apa_bepa
     åäö_s_u_n
@@ -411,7 +440,7 @@ def test_unicode_and_escaping():
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
     >>> kak.wait()
     0
-    >>> fifo_cleanup()
+    >>> _fifo_cleanup()
     """
     pass
 
@@ -419,23 +448,25 @@ def test_unicode_and_escaping():
 def test_remote_commands_async():
     u"""
     >>> kak = libkak.headless()
-    >>> @libkak.remote(kak.pid)
-    ... def write_position(pipe, line, column):
-    ...      pipe(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    >>> @libkak.remote_def(kak.pid)
+    ... def write_position(reply, line, column):
+    ...      reply(join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> libkak.pipe(kak.pid, 'write_position', 'unnamed0')
     >>> time.sleep(0.02)
-    >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0')
+    >>> libkak.pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
     >>> time.sleep(0.01)
-    >>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0')
+    >>> libkak.pipe(kak.pid, 'exec \%H', 'unnamed0', sync=True)
+    >>> libkak.remote(kak.pid).onclient('unnamed0')(lambda selection: print(selection))
+    1:1, 1:5
     >>> q = Queue()
-    >>> libkak.remote(kak.pid, oneshot=True, oneshot_client='unnamed0')(lambda selection: q.put(selection))
+    >>> libkak.remote(kak.pid).onclient('unnamed0').asynchronous()(lambda selection: q.put(selection))
     >>> print(q.get())
     1:1, 1:5
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
     >>> kak.wait()
     0
-    >>> fifo_cleanup()
+    >>> _fifo_cleanup()
     """
     pass
 
@@ -443,7 +474,7 @@ def test_remote_commands_async():
 def test_commands_with_params():
     u"""
     >>> kak = libkak.headless()
-    >>> @libkak.remote(kak.pid, params='2..', sync='call_from_python')
+    >>> @libkak.remote_def(kak.pid, params='2..', sync_python_calls=True)
     ... def test(arg1, arg2, args):
     ...      print(', '.join((arg1, arg2) + args[2:]))
     >>> test(None, 'one', 'two', 'three', 'four')
@@ -457,7 +488,7 @@ def test_commands_with_params():
     >>> libkak.pipe(kak.pid, 'quit!', 'unnamed0')
     >>> kak.wait()
     0
-    >>> fifo_cleanup()
+    >>> _fifo_cleanup()
     """
     pass
 

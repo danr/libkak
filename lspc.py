@@ -277,33 +277,23 @@ def main(session, mock={}):
         return sync
 
     def handler(method=None, make_params=None, params='0', enum=None):
-        def decorate(f):
-            def modsh(msg):
-                return """
-                    while read lsp_cmd; do
-                        IFS=':' read -ra x <<< "$lsp_cmd"
-                        if [[ $kak_opt_filetype == ${x[0]} ]]; then
-                            unset x[0]
-                            cmd="${x[@]}"
-                            """ + msg + """
-                            break
-                        fi
-                    done <<< "$kak_opt_lsp_cmds"
-                """
+        r = libkak.remote_def(session, params=params, enum=enum)
+        r_pre = r.pre
+        r.pre = lambda f: r_pre(f) + '''
+                while read lsp_cmd; do
+                    IFS=':' read -ra x <<< "$lsp_cmd"
+                    if [[ $kak_opt_filetype == ${x[0]} ]]; then
+                        unset x[0]
+                        cmd="${x[@]}"
+                        '''
+        r.post = r.post + '''
+                        break
+                    fi
+                done <<< "$kak_opt_lsp_cmds"'''
+        r.call_list = [make_sync(method, make_params)]
+        r.quickargs['cmd'] = ('cmd', libkak.string)
+        return r
 
-            if enum:
-                sh = "echo '" + '\n'.join(enum) + "'"
-                def_quoting = (' -shell-candidates %{' + sh + '} %(', ')')
-            else:
-                def_quoting = ('%(', ')')
-
-            return libkak.remote(session,
-                                 modsh=modsh,
-                                 def_quoting=def_quoting
-                                 before_decorated=make_sync(method, make_params),
-                                 more_quickargs={'cmd': ('cmd', libkak.string)},
-                                 params=params)(f)
-        return decorate
 
     @remote(session)
     def lsp_sync_all(buflist):
