@@ -5,7 +5,6 @@ from six.moves.queue import Queue
 from subprocess import Popen, PIPE
 from threading import Thread
 import functools
-import inspect
 import itertools as it
 import os
 import re
@@ -17,13 +16,14 @@ import utils
 
 
 class Remote(object):
-    def __init__(self, session):
+    def __init__(self, session, puns=True):
         self.session = session
         self.pre = lambda _: '%sh('
         self.post = ')'
         self.arg_config = {}
+        self.puns = puns
+        self.argnames = []
         self.sync_setup = False
-        self.call_list = []
 
         def ret():
             x = self.listen()
@@ -31,29 +31,27 @@ class Remote(object):
             return x
         self.ret = ret
 
-    def _make_async(r):
+    @staticmethod
+    def asynchronous(session, r=None):
+        r = r or Remote(session)
         r_ret = r.ret
         r.ret = lambda: utils.fork()(r_ret)
-
-    @staticmethod
-    def asynchronous(session):
-        r = Remote(session)
-        r._make_async()
         return r
 
     @staticmethod
-    def onclient(session, client, sync=True):
-        r = Remote(session)
+    def onclient(session, client, sync=True, r=None):
+        r = r or Remote(session)
         r_pre = r.pre
         r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
         r.post = ')' + r.post
         if not sync:
-            r._make_async()
+            r.asynchronous(session, r=r)
         return r
 
     @staticmethod
-    def command(session, params='0', enum=[], sync_setup=False, sync_python_calls=False):
-        r = Remote(session)
+    def command(session, params='0', enum=[],
+                sync_setup=False, sync_python_calls=False, r=None):
+        r = r or Remote(session)
         r.sync_setup = sync_setup
         def ret():
             utils.fork(loop=True)(r.listen)
@@ -81,13 +79,11 @@ class Remote(object):
         return r
 
     def _argnames(self):
-        names = set(inspect.getargspec(self.f).args)
-        for g in self.call_list:
-            names.extend(inspect.getargspec(g).args)
-
-        if 'client' not in names:
-            names.add('client')
-        return names
+        names = {'client'}
+        names.update(self.argnames)
+        if self.puns:
+            names.update(utils.argnames(self.f))
+        return list(names)
 
     @staticmethod
     def _msg(splices, fifo):
@@ -110,7 +106,7 @@ class Remote(object):
 
     def __call__(self, f):
         self.f = f
-        splices, self.parse = _argsetup(self._argnames(), self.arg_config)
+        splices, self.parse = Args.argsetup(self._argnames(), self.arg_config)
         self.fifo, self.fifo_cleanup = _mkfifo()
         msg = self.pre(f) + self._msg(splices, self.fifo) + self.post
         pipe(self.session, msg, sync=self.sync_setup)
@@ -129,13 +125,10 @@ class Remote(object):
         r = self.parse(line)
 
         try:
-            r['reply'] = lambda msg: pipe(self.session, msg, r['client'])
-            r['reply_sync'] = lambda msg: pipe(self.session, msg, r['client'], sync=True)
-            r['r'] = r
-            for g in self.call_list:
-                _safe_kwcall(g, r)
-
-            return _safe_kwcall(self.f, r)
+            def reply(msg, sync=False):
+                return pipe(self.session, msg, r['client'], sync)
+            r['reply'] = reply
+            return utils.safe_kwcall(self.f, r) if self.puns else self.f(r)
         except TypeError as e:
             print(str(e), file=sys.stderr)
 
@@ -221,145 +214,148 @@ def complete(line, column, timestamp, completions):
 # Arguments and argument parsers
 
 
-def coord(s):
-    """
-    Parse a Kakoune coordinate.
-    """
-    return tuple(map(int, s.split('.')))
+class Args(object):
 
+    @staticmethod
+    def coord(s):
+        """
+        Parse a Kakoune coordinate.
+        """
+        return tuple(map(int, s.split('.')))
 
-def selection_desc(x):
-    """
-    Parse a Kakoune selection description.
-    """
-    return tuple(map(coord, x.split(',')))
+    @staticmethod
+    def selection_desc(x):
+        """
+        Parse a Kakoune selection description.
+        """
+        return tuple(map(Args.coord, x.split(',')))
 
+    @staticmethod
+    def string(x):
+        """
+        Parse a Kakoune string.
+        """
+        return x
 
-def string(x):
-    """
-    Parse a Kakoune string.
-    """
-    return x
+    @staticmethod
+    def listof(p):
+        r"""
+        Parse a Kakoune list of p.
 
+        >>> import random
+        >>> def random_fragment():
+        ...     return ''.join(random.sample(':\\abc', random.randrange(1, 5)))
+        >>> def test(n):
+        ...     xs = [random_fragment() for _ in range(n)]
+        ...     if xs and xs[-1] == '':
+        ...         xs[-1] = 'c'
+        ...     exs = ':'.join(utils.backslash_escape('\\:', s) for s in xs)
+        ...     xs2 = Args.listof(Args.string)(exs)
+        ...     assert(xs == xs2)
+        >>> for n in range(0, 10):
+        ...     test(n)
 
-def listof(p):
-    r"""
-    Parse a Kakoune list of p.
+        """
+        def rmlastcolon(s):
+            if s and s[-1] == ':':
+                return s[:-1]
+            else:
+                return s
 
-    >>> import random
-    >>> def random_fragment():
-    ...     return ''.join(random.sample(':\\abc', random.randrange(1, 5)))
-    >>> def test(n):
-    ...     xs = [random_fragment() for _ in range(n)]
-    ...     if xs and xs[-1] == '':
-    ...         xs[-1] = 'c'
-    ...     exs = ':'.join(utils.backslash_escape('\\:', s) for s in xs)
-    ...     xs2 = listof(string)(exs)
-    ...     assert(xs == xs2)
-    >>> for n in range(0, 10):
-    ...     test(n)
+        def inner(s):
+            ms = [m.group(0) for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
+            ms = [m if i == len(ms) - 1 else rmlastcolon(m)
+                  for i, m in enumerate(ms)]
+            return [p(re.sub(r'\\(.)', '\g<1>', x)) for x in ms]
+        return inner
 
-    """
-    def rmlastcolon(s):
-        if s and s[-1] == ':':
-            return s[:-1]
-        else:
-            return s
+    @staticmethod
+    def boolean(s):
+        """
+        Parse a Kakoune boolean.
+        """
+        return s == 'true'
 
-    def inner(s):
-        ms = [m.group(0) for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
-        ms = [m if i == len(ms) - 1 else rmlastcolon(m)
-              for i, m in enumerate(ms)]
-        return [p(re.sub(r'\\(.)', '\g<1>', x)) for x in ms]
-    return inner
+    @staticmethod
+    def args_parse(s):
+        return tuple(x.replace('_u', '_') for x in s.split('_S')[1:])
 
-
-def boolean(s):
-    """
-    Parse a Kakoune boolean.
-    """
-    return s == 'true'
-
-
-def _args_parse(s):
-    return tuple(x.replace('_u', '_') for x in s.split('_S')[1:])
+    @staticmethod
+    def argsetup(argnames, config):
+        """
+        >>> s, _ = Args.argsetup('client cmd reply'.split(), {'cmd': ('a', int)})
+        >>> print(s)
+        ['kak_client', 'a']
+        """
+        args = []
+        splices = []
+        for name in argnames:
+            try:
+                if name in config:
+                    splice, parse = config[name]
+                else:
+                    splice, parse = arg_config[name]
+                splices.append(splice)
+                args.append((name, parse))
+            except KeyError:
+                pass
+        def parse(line):
+            params = [v.replace('_n', '\n').replace('_u', '_')
+                      for v in line.split('_s')]
+            return {name: parse(value)
+                    for (name, parse), value in zip(args, params)}
+        return splices, parse
 
 
 arg_config = {
     'line':   ('kak_cursor_line',   int),
     'column': ('kak_cursor_column', int),
 
-    'aligntab':    ('kak_opt_aligntab',    boolean),
-    'filetype':    ('kak_opt_filetype',    string),
+    'aligntab':    ('kak_opt_aligntab',    Args.boolean),
+    'filetype':    ('kak_opt_filetype',    Args.string),
     'indentwidth': ('kak_opt_indentwidth', int),
-    'readonly':    ('kak_opt_readonly',    boolean),
-    'readonly':    ('kak_opt_readonly',    boolean),
+    'readonly':    ('kak_opt_readonly',    Args.boolean),
+    'readonly':    ('kak_opt_readonly',    Args.boolean),
     'tabstop':     ('kak_opt_tabstop',     int),
 
-    'pwd':  ('PWD',  string),
-    'PWD':  ('PWD',  string),
-    'PATH': ('PATH', string),
-    'HOME': ('HOME', string),
+    'pwd':  ('PWD',  Args.string),
+    'PWD':  ('PWD',  Args.string),
+    'PATH': ('PATH', Args.string),
+    'HOME': ('HOME', Args.string),
 
-    'args': ('__args', _args_parse),
-    'arg1': ('1',      string),
-    'arg2': ('2',      string),
-    'arg3': ('3',      string),
-    'arg4': ('4',      string),
-    'arg5': ('5',      string),
-    'arg6': ('6',      string),
-    'arg7': ('7',      string),
-    'arg8': ('8',      string),
-    'arg9': ('9',      string),
+    'args': ('__args', Args.args_parse),
+    'arg1': ('1',      Args.string),
+    'arg2': ('2',      Args.string),
+    'arg3': ('3',      Args.string),
+    'arg4': ('4',      Args.string),
+    'arg5': ('5',      Args.string),
+    'arg6': ('6',      Args.string),
+    'arg7': ('7',      Args.string),
+    'arg8': ('8',      Args.string),
+    'arg9': ('9',      Args.string),
 
-    'bufname':            ('kak_bufname',            string),
-    'buffile':            ('kak_buffile',            string),
-    'buflist':            ('kak_buflist',            listof(string)),
+    'bufname':            ('kak_bufname',            Args.string),
+    'buffile':            ('kak_buffile',            Args.string),
+    'buflist':            ('kak_buflist',            Args.listof(Args.string)),
     'timestamp':          ('kak_timestamp',          int),
-    'selection':          ('kak_selection',          string),
-    'selections':         ('kak_selections',         listof(string)),
-    'runtime':            ('kak_runtime',            string),
-    'session':            ('kak_session',            string),
-    'client':             ('kak_client',             string),
+    'selection':          ('kak_selection',          Args.string),
+    'selections':         ('kak_selections',         Args.listof(Args.string)),
+    'runtime':            ('kak_runtime',            Args.string),
+    'session':            ('kak_session',            Args.string),
+    'client':             ('kak_client',             Args.string),
     'cursor_line':        ('kak_cursor_line',        int),
     'cursor_column':      ('kak_cursor_column',      int),
     'cursor_char_column': ('kak_cursor_char_column', int),
     'cursor_byte_offset': ('kak_cursor_byte_offset', int),
-    'selection_desc':     ('kak_selection_desc',     selection_desc),
-    'selections_desc':    ('kak_selections_desc',    listof(selection_desc)),
+    'selection_desc':     ('kak_selection_desc',     Args.selection_desc),
+    'selections_desc':    ('kak_selections_desc',    Args.listof(Args.selection_desc)),
     'window_width':       ('kak_window_width',       int),
     'window_height':      ('kak_window_height',      int),
 }
 
 
-def _argsetup(argnames, config):
-    args = []
-    splices = []
-    for name in argnames:
-        try:
-            if name in config:
-                splice, parse = config[name]
-            else:
-                splice, parse = arg_config[name]
-            splices.append(splice)
-            args.append((name, parse))
-        except KeyError:
-            pass
-    def parse(line):
-        params = [v.replace('_n', '\n').replace('_u', '_')
-                  for v in line.split('_s')]
-        return {name: parse(value)
-                for (name, parse), value in zip(args, params)}
-    return splices, parse
-
-
 #############################################################################
 # Private utils
-
-
-def _safe_kwcall(f, d):
-    args = inspect.getargspec(f).args
-    return f(**{k: v for k, v in six.iteritems(d) if k in args})
 
 
 def _mkfifo(active_fifos = {}):
@@ -408,8 +404,8 @@ def test_remote_commands_sync():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid, sync_setup=True)
-    ... def write_position(line, column, reply_sync):
-    ...      reply_sync(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    ... def write_position(line, column, reply):
+    ...      reply(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''), sync=True)
     >>> pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')

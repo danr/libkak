@@ -272,27 +272,39 @@ def main(session, mock={}):
 
             if method:
                 langserver.call(method, make_params(**r))(q.put)
-                r['result'] = q.get()
+                return q.get()
 
         return sync
 
     def handler(method=None, make_params=None, params='0', enum=None):
-        r = libkak.remote_def(session, params=params, enum=enum)
-        r_pre = r.pre
-        r.pre = lambda f: r_pre(f) + '''
-                while read lsp_cmd; do
-                    IFS=':' read -ra x <<< "$lsp_cmd"
-                    if [[ $kak_opt_filetype == ${x[0]} ]]; then
-                        unset x[0]
-                        cmd="${x[@]}"
-                        '''
-        r.post = r.post + '''
-                        break
-                    fi
-                done <<< "$kak_opt_lsp_cmds"'''
-        r.call_list = [make_sync(method, make_params)]
-        r.quickargs['cmd'] = ('cmd', libkak.string)
-        return r
+        def decorate(f):
+            r = libkak.Remote(session, puns=False)
+            r.command(None, params=params, enum=enum, r=r)
+            r_pre = r.pre
+            r.pre = lambda f: r_pre(f) + '''
+                    while read lsp_cmd; do
+                        IFS=':' read -ra x <<< "$lsp_cmd"
+                        if [[ $kak_opt_filetype == ${x[0]} ]]; then
+                            unset x[0]
+                            cmd="${x[@]}"
+                            '''
+            r.post = r.post + '''
+                            break
+                        fi
+                    done <<< "$kak_opt_lsp_cmds"'''
+            r.call_list = [make_sync(method, make_params)]
+            r.quickargs['cmd'] = ('cmd', libkak.string)
+            sync = make_sync(method, make_params)
+            r.argnames = utils.argnames(sync) + utils.argnames(f)
+            @functools.wraps(f)
+            def k(r):
+                r['r'] = r
+                r['result'] = utils.safe_kwcall(sync, r)
+                msg = utils.safe_kwcall(f, r)
+                if msg:
+                    r['reply'](msg)
+            return r(k)
+        return decorate
 
 
     @remote(session)

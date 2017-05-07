@@ -2,6 +2,7 @@
 
 from threading import Thread
 import six
+import inspect
 
 
 def fork(loop=False):
@@ -75,4 +76,11 @@ def backslash_escape(cs, s):
         s = s.replace(c, "\\" + c)
     return s
 
+
+def argnames(f):
+    return inspect.getargspec(f).args
+
+
+def safe_kwcall(f, d):
+    return f(*(d[k] for k in argnames(f)))
 
