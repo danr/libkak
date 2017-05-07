@@ -65,19 +65,73 @@ class MockPopen(object):
         self.stdout = MockStdio(q_out)
 
 
+def listen(p):
+    line = p.stdin.readline()
+    header, value = line.split(b":")
+    assert(header == b"Content-Length")
+    cl = int(value)
+    p.stdin.readline()
+    obj = json.loads(p.stdin.read(cl).decode('utf-8'))
+    print('Server received: ', json.dumps(obj, indent=2))
+    return obj
+
+def process(mock, result=None):
+    obj = listen(mock)
+    method = obj['method']
+    if result:
+        pass
+    elif method == 'initialize':
+        result = {
+            'capabilities': {
+                'signatureHelpProvider': {
+                    'triggerCharacters': ['(', ',']
+                },
+                'completionProvider': {
+                    'triggerCharacters': ['.']
+                }
+            }
+        }
+    elif method in ['textDocument/didOpen', 'textDocument/didChange']:
+        result = None
+    elif method == 'textDocument/completion':
+        items = [
+            {
+                'label': 'apa',
+                'kind': 3,
+                'documentation': 'monkey function',
+                'detail': 'call the monkey',
+            },
+            {
+                'label': 'bepa',
+                'kind': 4,
+                'documentation': 'monkey constructor',
+                'detail': 'construct a monkey',
+            }
+        ]
+        result = {'items': items}
+    else:
+        raise RuntimeError('Unknown method: ' + method)
+    msg = lspc.jsonrpc({
+        'id': obj['id'],
+        'result': result
+    })
+    mock.stdout.write(msg)
+    return obj
+
+
 def test(debug=False):
     import time
     from threading import Thread
 
     p, q = Queue(), Queue()
 
-    lsp_mock = MockPopen(p, q)
+    mock = MockPopen(p, q)
     kak = libkak.headless(ui='dummy' if debug else 'dummy')
     def send(s, sync=False):
         print('Sending:', s)
         libkak.pipe(kak.pid, s, client='unnamed0', sync=sync)
 
-    t = Thread(target=lspc.main, args=(kak.pid, {'mock': lsp_mock}))
+    t = Thread(target=lspc.main, args=(kak.pid, {'mock': mock}))
     t.daemon = True
     t.start()
 
@@ -89,41 +143,12 @@ def test(debug=False):
     lsp_sync
     """)
 
-    def listen():
-        line = lsp_mock.stdin.readline()
-        header, value = line.split(b":")
-        assert(header == b"Content-Length")
-        cl = int(value)
-        lsp_mock.stdin.readline()
-        obj = json.loads(lsp_mock.stdin.read(cl).decode('utf-8'))
-        print('mock heard', json.dumps(obj, indent=2))
-        return obj
-
-    def reply(obj, result):
-        msg = lspc.jsonrpc({
-            'id': obj['id'],
-            'result': result
-        })
-        lsp_mock.stdout.write(msg)
-
-
     print('listening for initalization...')
-    obj = listen()
+    obj = process(mock)
     assert(obj['method'] == 'initialize')
-    reply(obj, {
-        'capabilities': {
-            'signatureHelpProvider': {
-                'triggerCharacters': ['(', ',']
-            },
-            'completionProvider': {
-                'triggerCharacters': ['.']
-            }
-        }
-    })
-    obj = listen()
+    obj = process(mock)
     assert(obj['method'] == 'textDocument/didOpen')
     assert(obj['params']['textDocument']['text'] == '\n')
-    reply(obj, None)
 
     print('waiting for hooks to be set up...')
     time.sleep(0.1)
@@ -141,50 +166,27 @@ def test(debug=False):
     ''')
 
     print('listening...')
-    obj = listen()
+    obj = process(mock)
     assert(obj['method'] == 'textDocument/didChange')
     assert(obj['params']['contentChanges'][0]['text'] == 'test.\n')
-    reply(obj, None)
-    obj = listen()
+    obj = process(mock)
     assert(obj['method'] == 'textDocument/completion')
     assert(obj['params']['position'] == {'line': 0, 'character': 5})
-    items = [
-        {
-            'label': 'apa',
-            'kind': 3,
-            'documentation': 'monkey function',
-            'detail': 'call the monkey',
-        },
-        {
-            'label': 'bepa',
-            'kind': 4,
-            'documentation': 'monkey constructor',
-            'detail': 'construct a monkey',
-        }
-    ]
-    reply(obj, {'items': items})
     # here comes second...
-    obj = listen()
+    items = [{'label': 'bepus'}]
+    obj = process(mock, {'items': items})
     assert(obj['method'] == 'textDocument/completion')
     assert(obj['params']['position'] == {'line': 0, 'character': 5})
-    items = [
-        {
-            'label': 'bepus',
-            'kind': 4,
-            'documentation': 'monkey constructor',
-            'detail': 'construct a monkey',
-        }
-    ]
-    reply(obj, {'items': items})
 
     print('waiting for hooks to be triggered')
     time.sleep(0.1)
-    s = libkak.Remote.onclient(kak.pid, 'unnamed0')(lambda selection: selection)
+    call = libkak.Remote.onclient(kak.pid, 'unnamed0')
+    s = call(lambda selection: selection)
     print('final selection:', s)
     assert(s == 'test.bepus\n')
 
     send('quit!')
-    lsp_mock.stdout.closed = True
+    mock.stdout.closed = True
     kak.wait()
 
 

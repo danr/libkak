@@ -61,7 +61,7 @@ def info_somewhere(msg, pos, where):
 def complete_item(item):
     return (
         item['label'],
-        '{}\n\n{}'.format(item['detail'], item['documentation']),
+        '{}\n\n{}'.format(item.get('detail'), item.get('documentation')),
         '{} [{}]'.format(item['label'], item.get('kind', '?'))
     )
 
@@ -277,7 +277,7 @@ def main(session, mock={}):
 
     def handler(method=None, make_params=None, params='0', enum=None):
         def decorate(f):
-            r = libkak.Remote(session, puns=False)
+            r = libkak.Remote(session)
             r.command(session=None, params=params, enum=enum, r=r, sync_setup=True)
             r_pre = r.pre
             r.pre = lambda f: r_pre(f) + '''
@@ -291,10 +291,9 @@ def main(session, mock={}):
                             break
                         fi
                     done <<< "$kak_opt_lsp_servers"''' + r.post
-            r.call_list = [make_sync(method, make_params)]
             r.arg_config['cmd'] = ('cmd', libkak.Args.string)
-            r.arg_config['completers'] = ('kak_opt_completers', libkak.Args.string)
             sync = make_sync(method, make_params)
+            r.puns = False
             r.argnames = utils.argnames(sync) + utils.argnames(f)
             @functools.wraps(f)
             def k(d):
@@ -383,8 +382,9 @@ def main(session, mock={}):
         cs = map(complete_item, result['items'])
         s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
         setup = ''
-        if 'lsp_completions' not in completers:
-            setup = 'set -add buffer=' + buffile + ' completers option=lsp_completions\n'
+        opt = 'option=lsp_completions'
+        if opt not in completers:
+            setup = 'set -add buffer=' + buffile + ' completers ' + opt + '\n'
         return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
     @handler(params='1', enum=somewhere)

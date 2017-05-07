@@ -16,12 +16,12 @@ import utils
 
 
 class Remote(object):
-    def __init__(self, session, puns=True):
+    def __init__(self, session):
         self.session = session
         self.pre = lambda _: '%sh('
         self.post = ')'
         self.arg_config = {}
-        self.puns = puns
+        self.puns = True
         self.argnames = []
         self.sync_setup = False
 
@@ -317,6 +317,7 @@ arg_config = {
     'readonly':    ('kak_opt_readonly',    Args.boolean),
     'readonly':    ('kak_opt_readonly',    Args.boolean),
     'tabstop':     ('kak_opt_tabstop',     int),
+    'completers':  ('kak_opt_completers',  Args.listof(Args.string)),
 
     'pwd':  ('PWD',  Args.string),
     'PWD':  ('PWD',  Args.string),
