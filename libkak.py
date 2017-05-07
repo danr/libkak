@@ -49,6 +49,22 @@ class Remote(object):
         return r
 
     @staticmethod
+    def hook(session, scope, name, group=None, filter='.*',
+             sync_setup=False, client=None, r=None):
+        r = r or Remote(session)
+        r.sync_setup = sync_setup
+        group = ' -group ' + group if group else ''
+        filter = utils.single_quoted(filter)
+        cmd = 'hook' + group + ' ' + scope + ' ' + name + ' ' + filter + ' %('
+        r_pre = r.pre
+        r.pre = lambda f: cmd + r_pre(f)
+        r.post = ')' + r.post
+        r.ret = lambda: utils.fork(loop=True)(r.listen)
+        if client:
+            r.onclient(None, client, r=r)
+        return r
+
+    @staticmethod
     def command(session, params='0', enum=[],
                 sync_setup=False, sync_python_calls=False, r=None):
         r = r or Remote(session)
@@ -113,14 +129,14 @@ class Remote(object):
         return self.ret()
 
     def listen(self):
-        #_debug(self.f.__name__ + ' ' + self.fifo + ' waiting for call...')
+        _debug(self.f.__name__ + ' ' + self.fifo + ' waiting for call...')
         with open(self.fifo, 'r') as fp:
             line = utils.decode(fp.readline()).rstrip()
             if line == '_q':
                 self.fifo_cleanup()
-                #_debug(self.fifo, 'demands quit')
+                _debug(self.fifo, 'demands quit')
                 raise RuntimeError('fifo demands quit')
-            #_debug(self.f.__name__ + ' ' + self.fifo + ' replied:' + repr(line))
+            _debug(self.f.__name__ + ' ' + self.fifo + ' replied:' + repr(line))
 
         r = self.parse(line)
 
@@ -157,14 +173,15 @@ def pipe(session, msg, client=None, sync=False):
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    #_debug(session, msg)
+    _debug(session, msg[:500])
     p.communicate(utils.encode(msg))
     if sync:
-        #_debug(fifo + ' waiting for completion...', msg.replace('\n', ' ')[:60])
+        _debug(fifo + ' waiting for completion...', msg.replace('\n', ' ')[:60])
         with open(fifo, 'r') as fifo_fp:
             fifo_fp.readline()
+        _debug(fifo + ' going to clean up...')
         fifo_cleanup()
-        #_debug(fifo + ' done')
+        _debug(fifo + ' done')
 
 
 #############################################################################
@@ -300,6 +317,7 @@ class Args(object):
             except KeyError:
                 pass
         def parse(line):
+            print(argnames, line)
             params = [v.replace('_n', '\n').replace('_u', '_')
                       for v in line.split('_s')]
             return {name: parse(value)
@@ -385,18 +403,19 @@ def _fifo_cleanup():
 
 
 def _debug(*xs):
-    print(*xs, file=sys.stderr)
+    if '-d' in sys.argv[1:]:
+        print(*xs, file=sys.stderr)
 
 
 #############################################################################
 # Tests
 
 
-def headless(ui='dummy'):
+def headless(ui='dummy', stdout=None):
     """
     Start a headless Kakoune process.
     """
-    p = Popen(['kak','-n','-ui',ui])
+    p = Popen(['kak','-n','-ui',ui], stdout=stdout)
     time.sleep(0.01)
     return p
 

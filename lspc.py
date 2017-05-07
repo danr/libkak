@@ -5,6 +5,7 @@ from collections import defaultdict, OrderedDict
 from six.moves.queue import Queue
 from subprocess import Popen, PIPE
 from threading import Thread
+import pprint
 import itertools as it
 import json
 import os
@@ -40,28 +41,31 @@ def info_somewhere(msg, pos, where):
     """
     if not msg:
         return
+    msg = msg.rstrip()
     if where == 'cursor':
         return 'info -placement above -anchor {} {}'.format(
             format_pos(pos), utils.single_quoted(msg))
     elif where == 'info':
         return 'info ' + utils.single_quoted(msg)
     elif where == 'docsclient':
-        with tempfile.NamedTemporaryFile() as tmp:
-            open(tmp.name, 'wb').write(utils.encode(msg))
-            return """
-                eval -try-client %opt[docsclient] %[
-                  edit! -scratch '*doc*'
-                  exec \%|fmt<space> {} %val[window_width] <space> -s <ret>
-                  exec gg
-                  set buffer filetype rst
-                  try %[rmhl number_lines]
-                ]""".format(tmp.name)
+        tmp = tempfile.mktemp()
+        open(tmp, 'wb').write(utils.encode(msg))
+        return """
+            eval -try-client %opt[docsclient] %[
+              edit! -scratch '*doc*'
+              exec \%d|cat<space> {tmp}<ret>
+              exec \%|fmt<space> - %val[window_width] <space> -s <ret>
+              exec gg
+              set buffer filetype rst
+              try %[rmhl number_lines]
+              %sh[rm {tmp}]
+            ]""".format(tmp=tmp)
 
 
 def complete_item(item):
     return (
         item['label'],
-        '{}\n\n{}'.format(item.get('detail'), item.get('documentation')),
+        '{}\n\n{}'.format(item.get('detail'), item.get('documentation')[:500]),
         '{} [{}]'.format(item['label'], item.get('kind', '?'))
     )
 
@@ -75,7 +79,10 @@ def pyls_signatureHelp(result, pos):
 
 
 def nice_sig(func_label, params, pn, pos):
-    func_name, _ = func_label.split('(', 1)
+    try:
+        func_name, _ = func_label.split('(', 1)
+    except ValueError:
+        func_name = func_label
     try:
         _, func_type = func_label.rsplit(')', 1)
     except ValueError:
@@ -99,8 +106,10 @@ class Langserver(object):
     def __init__(self, filetype, session, pwd, cmd, mock={}):
         self.cbs = {}
         self.diagnostics = defaultdict(dict)
+        self.session = session
+        self.client_editing = {}
 
-        print(filetype + ' spawns ' + cmd)
+        print(filetype, ' spawns ', cmd)
 
         if cmd in mock:
             self.proc = mock[cmd]
@@ -109,8 +118,7 @@ class Langserver(object):
 
         t = Thread(target=Langserver.spawn, args=(self, session, pwd))
         t.start()
-        print('thread', t, 'started for' , self.proc)
-
+        print('thread', t, 'started for', self.proc)
 
     def craft(self, method, params, cb=None, _private={'n': 0}):
         """
@@ -143,6 +151,7 @@ class Langserver(object):
     def spawn(self, session, pwd):
 
         rootUri = 'file://' + pwd
+
         @self.call('initialize', {
             'processId': os.getpid(),
             'rootUri': rootUri,
@@ -161,7 +170,6 @@ class Langserver(object):
                 self.complete_chars = completionProvider['triggerCharacters']
             except KeyError:
                 self.complete_chars = []
-
 
         contentLength = 0
         while not self.proc.stdout.closed:
@@ -182,40 +190,53 @@ class Langserver(object):
                     print(msg, file=sys.stderr)
                     print('closed:', self.proc.stdout.closed)
                     continue
-                print('Response from langserver:', '\n'.join(json.dumps(msg, indent=2).split('\n')[:40]))
+                print('Response from langserver:', '\n'.join(pprint.pformat(msg).split('\n')[:40]))
                 if msg.get('id') in self.cbs:
                     cb = self.cbs[msg['id']]
                     del self.cbs[msg['id']]
                     if 'error' in msg:
-                        print('error', file=sys.stderr)
+                        print('error', pprint.pformat(msg), file=sys.stderr)
+                        cb(msg.get('error'))
                     else:
                         cb(msg.get('result'))
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    @libkak.Remote.asynchronous(self.session)
-                    def _(buffile, timestamp):
-                        msg = msg['params']
-                        if msg['uri'] == 'file://' + buffile:
-                            self.diagnostics[buffile].clear()
-                            self.diagnostics[buffile]['timestamp'] = timestamp
-                            flags = [str(timestamp), '1|   ']
-                            from_severity = [
-                                '',
-                                '{red+b}>> ',
-                                '{yellow+b}>> ',
-                                '{blue}>> ',
-                                '{green}>> '
-                            ]
-                            for diag in msg['diagnostics']:
-                                line0 = int(diag['range']['start']['line']) + 1
-                                col0 = int(diag['range']['start']['character']) + 1
-                                flags.append(str(line0) + '|' +
-                                             from_severity[diag.get('severity', 1)])
-                                self.diagnostics[buffile][line0].append({
-                                    'col': col0,
-                                    'message': diag['message']
-                                })
-                            # todo: Set for the other buffers too (but they need to be opened)
-                            return 'set buffer=' + buffile + ' lsp_flags ' + ':'.join(flags)
+                    pass
+                    #self.publish_diagnostics(msg['params'])
+
+    def publish_diagnostics(self, msg):
+        if not msg['uri'].startswith('file://'):
+            return
+        buffile = msg['uri'][len('file://'):]
+        if buffile not in self.client_editing:
+            return
+        r = libkak.Remote(self.session)
+        r_pre = r.pre
+        r.pre = lambda f: 'edit ' + buffile + '\n' + r_pre(f)
+        r.onclient(None, self.client_editing[buffile], sync=False, r=r)
+
+        @r
+        def _(timestamp, reply):
+            self.diagnostics[buffile] = defaultdict(list)
+            self.diagnostics[buffile]['timestamp'] = timestamp
+            flags = [str(timestamp), '1|   ']
+            from_severity = [
+                '',
+                '{red+b}>> ',
+                '{yellow+b}>> ',
+                '{blue}>> ',
+                '{green}>> '
+            ]
+            for diag in msg['diagnostics']:
+                line0 = int(diag['range']['start']['line']) + 1
+                col0 = int(diag['range']['start']['character']) + 1
+                flags.append(str(line0) + '|' +
+                             from_severity[diag.get('severity', 1)])
+                self.diagnostics[buffile][line0].append({
+                    'col': col0,
+                    'message': diag['message']
+                })
+            # todo: Set for the other buffers too (but they need to be opened)
+            reply('set buffer=' + buffile + ' lsp_flags ' + utils.single_quoted(':'.join(flags)))
 
 
 def main(session, mock={}):
@@ -226,6 +247,7 @@ def main(session, mock={}):
     timestamps = {}
 
     def make_sync(method, make_params):
+
         def sync(d, line, column, buffile, filetype, timestamp, pwd, cmd, client):
 
             d['pos'] = {'line': line - 1, 'character': column - 1}
@@ -248,16 +270,18 @@ def main(session, mock={}):
                 with tempfile.NamedTemporaryFile() as tmp:
                     write = "eval -no-hooks 'write {}'".format(tmp.name)
                     libkak.pipe(session, write, client=client, sync=True)
+                    print('finished writing to tempfile')
                     contents = open(tmp.name, 'r').read()
+                langserver.client_editing[buffile] = client
                 if old_timestamp is None:
                     langserver.call('textDocument/didOpen', {
-                         'textDocument': {
-                             'uri': uri,
-                             'version': timestamp,
-                             'languageId': filetype,
-                             'text': contents
-                         }
-                     })(q.put)
+                        'textDocument': {
+                            'uri': uri,
+                            'version': timestamp,
+                            'languageId': filetype,
+                            'text': contents
+                        }
+                    })(q.put)
                 else:
                     langserver.call('textDocument/didChange', {
                         'textDocument': {
@@ -266,7 +290,9 @@ def main(session, mock={}):
                         },
                         'contentChanges': [{'text': contents}]
                     })(q.put)
+                print('sync: waiting for didChange reply...')
                 q.get()
+                print('sync: got didChange reply...')
 
             if method:
                 print(method, 'calling langserver')
@@ -281,6 +307,7 @@ def main(session, mock={}):
             r.command(session=None, params=params, enum=enum, r=r, sync_setup=True)
             r_pre = r.pre
             r.pre = lambda f: r_pre(f) + '''
+                    [[ -z $kak_opt_filetype ]] && exit
                     while read lsp_cmd; do
                         IFS=':' read -ra x <<< "$lsp_cmd"
                         if [[ $kak_opt_filetype == ${x[0]} ]]; then
@@ -301,18 +328,13 @@ def main(session, mock={}):
                 import pprint
                 #print('handler calls sync', pprint.pformat(d))
                 d['result'] = utils.safe_kwcall(sync, d)
-                print('Calling', f.__name__, pprint.pformat(d))
+                print('Calling', f.__name__, pprint.pformat(d)[:500])
                 msg = utils.safe_kwcall(f, d)
                 if msg:
                     d['reply'](msg)
             return r(k)
         return decorate
 
-
-    @libkak.Remote.command(session, sync_setup=True)
-    def lsp_sync_all(buflist):
-        buffers = ','.join(map(utils.single_quoted, buflist))
-        return 'eval -buffer ' + buffers + ' lsp_sync'
 
     @handler()
     def lsp_sync(buffile, langserver):
@@ -323,9 +345,8 @@ def main(session, mock={}):
             * the language server is registered at the language server,
             * the language server has an up-to-date view on the buffer
               (even if it is not saved).
-            * the window has hooks set up for complete & sig help
 
-        Hooked automatically to NormalBegin, WinDisplay and filetype WinSetOption.
+        Hooked automatically to WinDisplay and filetype WinSetOption.
         """
         msg = 'echo synced'
         if buffile not in hooks_setup:
@@ -337,7 +358,7 @@ def main(session, mock={}):
             if compl:
                 msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_complete'.format(buffile, ''.join(compl))
         print(msg)
-        return msg
+        return '' # msg
 
     @handler('textDocument/signatureHelp',
              lambda pos, uri:
@@ -346,7 +367,7 @@ def main(session, mock={}):
              params='0..1', enum=somewhere)
     def lsp_signature_help(arg1, pos, uri, result):
         """
-        Write signature help by the cursor.
+        Write signature help by the cursor, info or docsclient.
         """
         where = arg1 or 'cursor'
         try:
@@ -387,7 +408,7 @@ def main(session, mock={}):
             setup = 'set -add buffer=' + buffile + ' completers ' + opt + '\n'
         return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
-    @handler(params='1', enum=somewhere)
+    @handler(params='0..1', enum=somewhere)
     def lsp_diagnostics(arg1, timestamp, line, buffile, langserver):
         """
         Describe diagnostics for the cursor line somewhere
@@ -401,7 +422,7 @@ def main(session, mock={}):
         """
         where = arg1 or 'cursor'
         diag = langserver.diagnostics[buffile]
-        if timestamp == diag.get('timestamp'):
+        if timestamp == diag.get('timestamp') or True:
             if line in diag:
                 min_col = 98765
                 msgs = []
@@ -474,6 +495,7 @@ def main(session, mock={}):
             lsp_hover cursor
         }
         """
+        where = arg1 or 'cursor'
         label = []
         if not result:
             return
@@ -486,16 +508,21 @@ def main(session, mock={}):
             else:
                 label.append(content)
         label = '\n\n'.join(label)
-        return info_somewhere(ctx, label, pos, arg1 or 'cursor')
+        return info_somewhere(label, pos, where)
 
     @handler('textDocument/references',
-             lambda pos, uri:
+             lambda arg1, pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos,
-                 'includeDeclaration': True})
-    def lsp_references(uri, result):
+                 'context':
+                    {'includeDeclaration': arg1 != 'false'}
+                 }, params='0..1', enum=('true', 'false'))
+    def lsp_references(arg1, uri, result):
         """
         Find the references to the identifier at the main cursor.
+
+        Takes one argument, whether to include the declaration or not.
+        (default: true)
         """
         c = []
         other = 0
@@ -520,7 +547,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos})
-    def lsp_goto_definition(ctx):
+    def lsp_goto_definition(result):
         """
         Go to the definition of the identifier at the main cursor.
         """
@@ -528,7 +555,7 @@ def main(session, mock={}):
             result = [result]
 
         if not result:
-            return 'echo -color -red No results!'
+            return 'echo -color red No results!'
 
         c = []
         for loc in result:
@@ -547,28 +574,35 @@ def main(session, mock={}):
                 action = 'echo -color red Cannot open {}'.format(uri)
             line0, _ = p0
             options.append((u'{}:{}'.format(uri, line0), action))
-        return libkak.menu(options)
+            return libkak.menu(options)
 
 
     libkak.pipe(session, """#kak
     remove-hooks global lsp
+    try %{declare-option str lsp_servers}
+    try %{declare-option str lsp_complete_chars}
+    try %{declare-option str lsp_signature_help_chars}
     try %{declare-option completions lsp_completions}
     # set-option global completers option=lsp_completions
     try %{declare-option line-flags lsp_flags}
-    try %{add-highlighter flag_lines default lsp_flags}
 
-    #hook -group lsp global InsertEnd .* lsp_sync
-    #hook -group lsp global BufSetOption filetype=.* lsp_sync
-    #hook -group lsp global WinDisplay .* lsp_sync
+    hook -group lsp global WinDisplay .* %{
+        try %{add-highlighter flag_lines default lsp_flags}
+    }
 
-    # sync with all open buffers (yes!)
-    #lsp_sync_all
+    # hook -group lsp global InsertChar .* %{
+    #     if [[ $kak_hook_param in $kak_opt_lsp_signature_help_chars ]]; then
+    #         echo lsp_signature_help
+    #     ]]
+    #     if [[ $kak_hook_param in $kak_opt_lsp_complete_chars ]]; then
+    #         echo lsp_complete
+    #     ]]
+    # }
+
+    hook -group lsp global WinSetOption filetype=.* lsp_sync
+    hook -group lsp global WinDisplay .* lsp_sync
     """)
 
 
-
 if __name__ == '__main__':
-    kak = libkak.Kak('pipe', int(sys.argv[1]), 'unnamed0',
-                     debug='-v' in sys.argv)
-    main(kak)
-
+    main(int(sys.argv[1]))
