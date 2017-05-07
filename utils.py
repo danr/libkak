@@ -78,9 +78,17 @@ def backslash_escape(cs, s):
 
 
 def argnames(f):
+    """
+    >>> argnames(lambda x, y, *zs, **kws: None)
+    ['x', 'y']
+    """
     return inspect.getargspec(f).args
 
 
 def safe_kwcall(f, d):
+    """
+    >>> safe_kwcall(lambda x: x, dict(x=2, y=3))
+    2
+    """
     return f(*(d[k] for k in argnames(f)))
 

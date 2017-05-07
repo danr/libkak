@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.append(os.getcwd())
+import utils
 import libkak
 import lspc
 from multiprocessing import Queue
@@ -44,7 +45,7 @@ class MockStdio(object):
             if self.closed:
                 break
             cs.append(c)
-        return libkak.encode(''.join(cs))
+        return utils.encode(''.join(cs))
 
     def readline(self):
         cs = []
@@ -56,6 +57,7 @@ class MockStdio(object):
             if c == b'\n':
                 break
         return b''.join(cs)
+
 
 class MockPopen(object):
     def __init__(self, q_in, q_out):
@@ -70,17 +72,22 @@ def test(debug=False):
     p, q = Queue(), Queue()
 
     lsp_mock = MockPopen(p, q)
-    kak = libkak.headless(debug=debug, ui='json' if debug else 'dummy')
-    kak.send('declare-option str filetype somefiletype')
-    kak.send('declare-option str lsp_somefiletype_cmd mock')
-    kak.send('set global completers option=lsp_completions')
-    kak.sync()
-    kak2 = libkak.Kak('pipe', kak._pid, 'unnamed0', debug=debug)
-    t = Thread(target=lspc.main, args=(kak2, {'mock': lsp_mock}))
+    kak = libkak.headless(ui='dummy' if debug else 'dummy')
+    def send(s, sync=False):
+        print('Sending:', s)
+        libkak.pipe(kak.pid, s, client='unnamed0', sync=sync)
+
+    t = Thread(target=lspc.main, args=(kak.pid, {'mock': lsp_mock}))
     t.daemon = True
     t.start()
 
-    kak.release()
+    time.sleep(1)
+
+    send(""" #kak
+    set buffer filetype somefiletype
+    declare-option str lsp_servers somefiletype:mock
+    lsp_sync
+    """)
 
     def listen():
         line = lsp_mock.stdin.readline()
@@ -89,7 +96,7 @@ def test(debug=False):
         cl = int(value)
         lsp_mock.stdin.readline()
         obj = json.loads(lsp_mock.stdin.read(cl).decode('utf-8'))
-        print('heard:', json.dumps(obj, indent=2))
+        print('mock heard', json.dumps(obj, indent=2))
         return obj
 
     def reply(obj, result):
@@ -113,18 +120,27 @@ def test(debug=False):
             }
         }
     })
-    print('sync to get hooks up and running...')
-    kak.send('lsp_sync')
-    kak.release()
     obj = listen()
     assert(obj['method'] == 'textDocument/didOpen')
     assert(obj['params']['textDocument']['text'] == '\n')
     reply(obj, None)
-    time.sleep(1)
 
-    print('listening for hook on completion...')
-    kak.execute('itest.')
-    kak.release()
+    print('waiting for hooks to be set up...')
+    time.sleep(0.1)
+    send(''' # kak
+    exec itest.
+    hook -group first buffer InsertCompletionShow .* %{
+        rmhooks buffer first
+        exec <esc>a
+        lsp_complete
+        hook -group second buffer InsertCompletionShow .* %{
+            rmhooks buffer second
+            exec '<c-n><esc>\%'
+        }
+    }
+    ''')
+
+    print('listening...')
     obj = listen()
     assert(obj['method'] == 'textDocument/didChange')
     assert(obj['params']['contentChanges'][0]['text'] == 'test.\n')
@@ -147,25 +163,29 @@ def test(debug=False):
         }
     ]
     reply(obj, {'items': items})
-
-    time.sleep(1)
-    kak.execute('<esc>a')
-    kak.send('lsp_complete ""')
-    kak.release()
+    # here comes second...
     obj = listen()
     assert(obj['method'] == 'textDocument/completion')
     assert(obj['params']['position'] == {'line': 0, 'character': 5})
+    items = [
+        {
+            'label': 'bepus',
+            'kind': 4,
+            'documentation': 'monkey constructor',
+            'detail': 'construct a monkey',
+        }
+    ]
     reply(obj, {'items': items})
 
-    time.sleep(1)
-    kak.execute('<c-n><c-n><esc>%')
-    kak.sync()
-    s = kak.val.selection()
+    print('waiting for hooks to be triggered')
+    time.sleep(0.1)
+    s = libkak.Remote.onclient(kak.pid, 'unnamed0')(lambda selection: selection)
     print('final selection:', s)
-    assert(s == 'test.bepa\n')
+    assert(s == 'test.bepus\n')
 
-    kak.quit(force=True)
+    send('quit!')
     lsp_mock.stdout.closed = True
+    kak.wait()
 
 
 if __name__ == '__main__':

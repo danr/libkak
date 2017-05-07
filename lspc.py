@@ -7,11 +7,13 @@ from subprocess import Popen, PIPE
 from threading import Thread
 import itertools as it
 import json
-import libkak
 import os
 import six
 import sys
 import tempfile
+import libkak
+import utils
+import functools
 
 
 def jsonrpc(obj):
@@ -40,12 +42,12 @@ def info_somewhere(msg, pos, where):
         return
     if where == 'cursor':
         return 'info -placement above -anchor {} {}'.format(
-            format_pos(pos), libkak.single_quoted(msg))
+            format_pos(pos), utils.single_quoted(msg))
     elif where == 'info':
-        return 'info ' + libkak.single_quoted(msg)
+        return 'info ' + utils.single_quoted(msg)
     elif where == 'docsclient':
         with tempfile.NamedTemporaryFile() as tmp:
-            open(tmp.name, 'wb').write(libkak.encode(msg))
+            open(tmp.name, 'wb').write(utils.encode(msg))
             return """
                 eval -try-client %opt[docsclient] %[
                   edit! -scratch '*doc*'
@@ -53,7 +55,7 @@ def info_somewhere(msg, pos, where):
                   exec gg
                   set buffer filetype rst
                   try %[rmhl number_lines]
-                ]""".format(tmp.name))
+                ]""".format(tmp.name)
 
 
 def complete_item(item):
@@ -94,7 +96,7 @@ def nice_sig(func_label, params, pn, pos):
 
 
 class Langserver(object):
-    def __init__(self, session, pwd, cmd, mock={}):
+    def __init__(self, filetype, session, pwd, cmd, mock={}):
         self.cbs = {}
         self.diagnostics = defaultdict(dict)
 
@@ -189,8 +191,8 @@ class Langserver(object):
                     else:
                         cb(msg.get('result'))
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    @libkak.remote(self.session, oneshot=True)
-                    def _(buffile, buffile, timestamp):
+                    @libkak.Remote.asynchronous(self.session)
+                    def _(buffile, timestamp):
                         msg = msg['params']
                         if msg['uri'] == 'file://' + buffile:
                             self.diagnostics[buffile].clear()
@@ -217,10 +219,6 @@ class Langserver(object):
 
 
 def main(session, mock={}):
-    """
-    @type kak: libkak.Kak
-    """
-
     diagnostics = defaultdict(list)
     hooks_setup = set()
 
@@ -228,17 +226,17 @@ def main(session, mock={}):
     timestamps = {}
 
     def make_sync(method, make_params):
-        def sync(r, line, column, buffile, filetype, timestamp, pwd, cmd):
+        def sync(d, line, column, buffile, filetype, timestamp, pwd, cmd, client):
 
-            r['pos'] = {'line': line - 1, 'character': column - 1}
-            r['uri'] = uri = 'file://' + buffile
+            d['pos'] = {'line': line - 1, 'character': column - 1}
+            d['uri'] = uri = 'file://' + buffile
 
             if filetype in langservers:
                 print(filetype + ' already spawned')
             else:
                 langservers[filetype] = Langserver(filetype, session, pwd, cmd, mock)
 
-            r['langserver'] = langserver = spawned[filetype]
+            d['langserver'] = langserver = langservers[filetype]
 
             q = Queue()
 
@@ -271,7 +269,8 @@ def main(session, mock={}):
                 q.get()
 
             if method:
-                langserver.call(method, make_params(**r))(q.put)
+                print(method, 'calling langserver')
+                langserver.call(method, utils.safe_kwcall(make_params, d))(q.put)
                 return q.get()
 
         return sync
@@ -279,7 +278,7 @@ def main(session, mock={}):
     def handler(method=None, make_params=None, params='0', enum=None):
         def decorate(f):
             r = libkak.Remote(session, puns=False)
-            r.command(None, params=params, enum=enum, r=r)
+            r.command(session=None, params=params, enum=enum, r=r, sync_setup=True)
             r_pre = r.pre
             r.pre = lambda f: r_pre(f) + '''
                     while read lsp_cmd; do
@@ -288,28 +287,32 @@ def main(session, mock={}):
                             unset x[0]
                             cmd="${x[@]}"
                             '''
-            r.post = r.post + '''
+            r.post = '''
                             break
                         fi
-                    done <<< "$kak_opt_lsp_cmds"'''
+                    done <<< "$kak_opt_lsp_servers"''' + r.post
             r.call_list = [make_sync(method, make_params)]
-            r.quickargs['cmd'] = ('cmd', libkak.string)
+            r.arg_config['cmd'] = ('cmd', libkak.Args.string)
+            r.arg_config['completers'] = ('kak_opt_completers', libkak.Args.string)
             sync = make_sync(method, make_params)
             r.argnames = utils.argnames(sync) + utils.argnames(f)
             @functools.wraps(f)
-            def k(r):
-                r['r'] = r
-                r['result'] = utils.safe_kwcall(sync, r)
-                msg = utils.safe_kwcall(f, r)
+            def k(d):
+                d['d'] = d
+                import pprint
+                #print('handler calls sync', pprint.pformat(d))
+                d['result'] = utils.safe_kwcall(sync, d)
+                print('Calling', f.__name__, pprint.pformat(d))
+                msg = utils.safe_kwcall(f, d)
                 if msg:
-                    r['reply'](msg)
+                    d['reply'](msg)
             return r(k)
         return decorate
 
 
-    @remote(session)
+    @libkak.Remote.command(session, sync_setup=True)
     def lsp_sync_all(buflist):
-        buffers = ','.join(map(singe_quoted, buflist))
+        buffers = ','.join(map(utils.single_quoted, buflist))
         return 'eval -buffer ' + buffers + ' lsp_sync'
 
     @handler()
@@ -333,7 +336,8 @@ def main(session, mock={}):
                 msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_signature_help'.format(buffile, ''.join(sig))
             compl = langserver.complete_chars
             if compl:
-                msg += '\nhook -group lsp buffer={} InsertChar [{}] %[lsp_complete ""]'.format(buffile, ''.join(compl))
+                msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_complete'.format(buffile, ''.join(compl))
+        print(msg)
         return msg
 
     @handler('textDocument/signatureHelp',
@@ -366,7 +370,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos})
-    def lsp_complete(line, column, timestamp, buffile, result):
+    def lsp_complete(line, column, timestamp, buffile, completers, result):
         """
         Complete at the main cursor.
 
@@ -377,8 +381,11 @@ def main(session, mock={}):
         (Sets the variable lsp_completions.)
         """
         cs = map(complete_item, result['items'])
-        s = libkak.single_quoted(complete(line, column, timestamp, cs))
-        return 'set buffer=' + buffile + ' lsp_completions ' + s
+        s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
+        setup = ''
+        if 'lsp_completions' not in completers:
+            setup = 'set -add buffer=' + buffile + ' completers option=lsp_completions\n'
+        return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
     @handler(params='1', enum=somewhere)
     def lsp_diagnostics(arg1, timestamp, line, buffile, langserver):
@@ -515,7 +522,7 @@ def main(session, mock={}):
                  'position': pos})
     def lsp_goto_definition(ctx):
         """
-        Goto the definition of the identifier at the main cursor.
+        Go to the definition of the identifier at the main cursor.
         """
         if 'uri' in result:
             result = [result]
@@ -543,21 +550,19 @@ def main(session, mock={}):
         return libkak.menu(options)
 
 
-    pipe_to_kak("""#kak
+    libkak.pipe(session, """#kak
     remove-hooks global lsp
     try %{declare-option completions lsp_completions}
-    # set-option global completers option=lsp_completions'
+    # set-option global completers option=lsp_completions
     try %{declare-option line-flags lsp_flags}
     try %{add-highlighter flag_lines default lsp_flags}
 
-    hook -group lsp global InsertEnd .* lsp_sync
-    hook -group lsp global WinSetOption filetype=.* lsp_sync
-    hook -group lsp global WinDisplay .* lsp_sync
+    #hook -group lsp global InsertEnd .* lsp_sync
+    #hook -group lsp global BufSetOption filetype=.* lsp_sync
+    #hook -group lsp global WinDisplay .* lsp_sync
 
     # sync with all open buffers (yes!)
-    %sh{
-        echo eval -buffer %{kak_buflist//:/,} lsp_sync
-    }
+    #lsp_sync_all
     """)
 
 

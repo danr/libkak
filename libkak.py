@@ -113,14 +113,14 @@ class Remote(object):
         return self.ret()
 
     def listen(self):
-        #_debug(self.fifo + ' waiting for line...')
+        #_debug(self.f.__name__ + ' ' + self.fifo + ' waiting for call...')
         with open(self.fifo, 'r') as fp:
             line = utils.decode(fp.readline()).rstrip()
             if line == '_q':
                 self.fifo_cleanup()
                 #_debug(self.fifo, 'demands quit')
                 raise RuntimeError('fifo demands quit')
-            # _debug(self.fifo + ' replied:' + repr(line))
+            #_debug(self.f.__name__ + ' ' + self.fifo + ' replied:' + repr(line))
 
         r = self.parse(line)
 
@@ -157,10 +157,10 @@ def pipe(session, msg, client=None, sync=False):
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    # _debug(session, msg)
+    #_debug(session, msg)
     p.communicate(utils.encode(msg))
     if sync:
-        #_debug(fifo + ' waiting for line...')
+        #_debug(fifo + ' waiting for completion...', msg.replace('\n', ' ')[:60])
         with open(fifo, 'r') as fifo_fp:
             fifo_fp.readline()
         fifo_cleanup()
