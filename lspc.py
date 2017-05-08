@@ -15,6 +15,7 @@ import tempfile
 import libkak
 import utils
 import functools
+import re
 
 
 def jsonrpc(obj):
@@ -110,6 +111,7 @@ class Langserver(object):
         self.diagnostics = defaultdict(dict)
         self.session = session
         self.client_editing = {}
+        self.filetype = filetype
 
         print(filetype, ' spawns ', cmd)
 
@@ -213,9 +215,11 @@ class Langserver(object):
             return
         r = libkak.Remote.onclient(
             self.session, self.client_editing[buffile], sync=False)
-
+        r.arg_config['disabled'] = (
+            'kak_opt_lsp_' + self.filetype + '_disabled_diagnostics',
+            libkak.Args.string)
         @r
-        def _(timestamp, pipe):
+        def _(timestamp, pipe, disabled):
             self.diagnostics[buffile] = defaultdict(list)
             self.diagnostics[buffile]['timestamp'] = timestamp
             flags = [str(timestamp), '1|   ']
@@ -227,7 +231,7 @@ class Langserver(object):
                 '{green}>> '
             ]
             for diag in msg['diagnostics']:
-                if diag['message'].startswith('E501'):
+                if disabled and re.match(disabled, diag['message']):
                     continue
                 line0 = int(diag['range']['start']['line']) + 1
                 col0 = int(diag['range']['start']['character']) + 1
@@ -623,7 +627,6 @@ def main(session, mock={}):
     try %{declare-option str lsp_complete_chars}
     try %{declare-option str lsp_signature_help_chars}
     try %{declare-option completions lsp_completions}
-    # set-option global completers option=lsp_completions
     try %{declare-option line-flags lsp_flags}
 
     hook -group lsp global WinDisplay .* %{
