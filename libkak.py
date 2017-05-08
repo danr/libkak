@@ -32,26 +32,30 @@ class Remote(object):
         self.ret = ret
 
     @staticmethod
-    def asynchronous(session, r=None):
-        r = r or Remote(session)
+    def _resolve(self_or_session):
+        if isinstance(self_or_session, Remote):
+            return self_or_session
+        else:
+            return Remote(self_or_session)
+
+    def asynchronous(self_or_session):
+        r = Remote._resolve(self_or_session)
         r_ret = r.ret
         r.ret = lambda: utils.fork()(r_ret)
         return r
 
-    @staticmethod
-    def onclient(session, client, sync=True, r=None):
-        r = r or Remote(session)
+    def onclient(self_or_session, client, sync=True):
+        r = Remote._resolve(self_or_session)
         r_pre = r.pre
         r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
         r.post = ')' + r.post
         if not sync:
-            r.asynchronous(session, r=r)
+            r.asynchronous()
         return r
 
-    @staticmethod
-    def hook(session, scope, name, group=None, filter='.*',
-             sync_setup=False, client=None, r=None):
-        r = r or Remote(session)
+    def hook(self_or_session, scope, name, group=None, filter='.*',
+             sync_setup=False, client=None):
+        r = Remote._resolve(self_or_session)
         r.sync_setup = sync_setup
         group = ' -group ' + group if group else ''
         filter = utils.single_quoted(filter)
@@ -61,20 +65,19 @@ class Remote(object):
         r.post = ')' + r.post
         r.ret = lambda: utils.fork(loop=True)(r.listen)
         if client:
-            r.onclient(None, client, r=r)
+            r.onclient(client)
         return r
 
-    @staticmethod
-    def command(session, params='0', enum=[],
-                sync_setup=False, sync_python_calls=False, r=None):
-        r = r or Remote(session)
+    def command(self_or_session, params='0', enum=[],
+                sync_setup=False, sync_python_calls=False):
+        r = Remote._resolve(self_or_session)
         r.sync_setup = sync_setup
         def ret():
             utils.fork(loop=True)(r.listen)
             @functools.wraps(r.f)
             def call_from_python(client, *args):
                 escaped = [utils.single_quoted(arg) for arg in args]
-                pipe(session, ' '.join([r.f.__name__] + escaped), client,
+                pipe(r.session, ' '.join([r.f.__name__] + escaped), client,
                      sync=sync_python_calls)
             return call_from_python
         r.ret = ret
@@ -172,6 +175,7 @@ def pipe(session, msg, client=None, sync=False):
     if sync:
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
+    _debug('piping: ', msg.replace('\n', ' ')[:70])
     p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
     _debug(session, msg[:500])
     p.communicate(utils.encode(msg))
@@ -317,7 +321,7 @@ class Args(object):
             except KeyError:
                 pass
         def parse(line):
-            print(argnames, line)
+            _debug(argnames, line)
             params = [v.replace('_n', '\n').replace('_u', '_')
                       for v in line.split('_s')]
             return {name: parse(value)

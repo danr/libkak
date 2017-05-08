@@ -65,7 +65,7 @@ def info_somewhere(msg, pos, where):
 def complete_item(item):
     return (
         item['label'],
-        '{}\n\n{}'.format(item.get('detail'), item.get('documentation')[:500]),
+        '{}\n\n{}'.format(item.get('detail'), item.get('documentation', '')[:500]),
         '{} [{}]'.format(item['label'], item.get('kind', '?'))
     )
 
@@ -304,7 +304,7 @@ def main(session, mock={}):
     def handler(method=None, make_params=None, params='0', enum=None):
         def decorate(f):
             r = libkak.Remote(session)
-            r.command(session=None, params=params, enum=enum, r=r, sync_setup=True)
+            r.command(params=params, enum=enum, sync_setup=True)
             r_pre = r.pre
             r.pre = lambda f: r_pre(f) + '''
                     [[ -z $kak_opt_filetype ]] && exit
@@ -357,8 +357,7 @@ def main(session, mock={}):
             compl = langserver.complete_chars
             if compl:
                 msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_complete'.format(buffile, ''.join(compl))
-        print(msg)
-        return '' # msg
+        return msg
 
     @handler('textDocument/signatureHelp',
              lambda pos, uri:

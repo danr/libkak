@@ -239,8 +239,8 @@ def test_completion(kak, mock, send):
                         client='unnamed0', sync_setup=True)
     def hook(reply):
         print('count:', d['count'])
+        time.sleep(0.1)
         if d['count'] == 0:
-            #reply('exec <c-n><c-p>') # look at docstring
             reply('exec <esc>a; lsp_complete')
         elif d['count'] == 1:
             reply("exec '<c-n><esc>\%'")
