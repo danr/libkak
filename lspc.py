@@ -140,6 +140,7 @@ class Langserver(object):
         """
         craft assigns to cbs
         """
+
         def k(cb=None):
             msg = self.craft(method, params, cb)
             self.proc.stdin.write(msg)
@@ -200,8 +201,7 @@ class Langserver(object):
                     else:
                         cb(msg.get('result'))
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    pass
-                    #self.publish_diagnostics(msg['params'])
+                    self.publish_diagnostics(msg['params'])
 
     def publish_diagnostics(self, msg):
         if not msg['uri'].startswith('file://'):
@@ -209,10 +209,7 @@ class Langserver(object):
         buffile = msg['uri'][len('file://'):]
         if buffile not in self.client_editing:
             return
-        r = libkak.Remote(self.session)
-        r_pre = r.pre
-        r.pre = lambda f: 'edit ' + buffile + '\n' + r_pre(f)
-        r.onclient(None, self.client_editing[buffile], sync=False, r=r)
+        r = libkak.Remote.onclient(self.session, self.client_editing[buffile], sync=False)
 
         @r
         def _(timestamp, pipe):
@@ -365,7 +362,7 @@ def main(session, mock={}):
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos},
-             params='0..1', enum=somewhere)
+             params='0..1', enum=[somewhere])
     def lsp_signature_help(arg1, pos, uri, result):
         """
         Write signature help by the cursor, info or docsclient.
@@ -409,7 +406,7 @@ def main(session, mock={}):
             setup = 'set -add buffer=' + buffile + ' completers ' + opt + '\n'
         return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
-    @handler(params='0..1', enum=somewhere)
+    @handler(params='0..1', enum=[somewhere])
     def lsp_diagnostics(arg1, timestamp, line, buffile, langserver):
         """
         Describe diagnostics for the cursor line somewhere
@@ -423,29 +420,31 @@ def main(session, mock={}):
         """
         where = arg1 or 'cursor'
         diag = langserver.diagnostics[buffile]
-        if timestamp == diag.get('timestamp') or True:
-            if line in diag:
-                min_col = 98765
-                msgs = []
-                for d in diag[line]:
-                    if d['col'] < min_col:
-                        min_col = d['col']
-                    msgs.append(d['message'])
-                pos = {'line': line - 1, 'character': min_col - 1}
-                return info_somewhere('\n'.join(msgs), pos, where)
+        if line in diag:
+            min_col = 98765
+            msgs = []
+            for d in diag[line]:
+                if d['col'] < min_col:
+                    min_col = d['col']
+                msgs.append(d['message'])
+            pos = {'line': line - 1, 'character': min_col - 1}
+            return info_somewhere('\n'.join(msgs), pos, where)
 
-    @handler(params='0..1', enum=('next', 'prev'))
-    def lsp_diagnostics_jump(arg1, timestamp, line, buffile, langserver):
+    @handler(params='0..2', enum=[('next', 'prev'), somewhere + ['none']])
+    def lsp_diagnostics_jump(arg1, arg2, timestamp, line, buffile, langserver, pipe):
         """
         Jump to next or prev diagnostic (relative to the main cursor line)
 
         Example configuration:
 
-        map global user n ':lsp_diagonstics_jump next<ret>:lsp_diagnostics cursor<ret>'
-        map global user p ':lsp_diagonstics_jump prev<ret>:lsp_diagnostics cursor<ret>'
+        map global user n ':lsp_diagonstics_jump next cursor<ret>'
+        map global user p ':lsp_diagonstics_jump prev cursor<ret>'
         """
         direction = arg1 or 'next'
+        where = arg2 or 'none'
         diag = langserver.diagnostics[buffile]
+        if timestamp != diag.get('timestamp'):
+            pipe('lsp_sync')
         if timestamp == diag.get('timestamp'):
             next_line = None
             first_line = None
@@ -476,15 +475,18 @@ def main(session, mock={}):
             if next_line:
                 y = next_line
                 x = diag[y][0]['col']
-                return libkak.select([((y, x), (y, x))])
-        else:
-            return 'lsp_sync'
+                msg = libkak.select([((y, x), (y, x))])
+                if where == 'none':
+                    return where
+                else:
+                    pipe(msg, sync=True)
+                    return 'lsp_diagnostics ' + where
 
     @handler('textDocument/hover',
              lambda pos, uri:
                 {'textDocument': {'uri': uri},
                  'position': pos},
-             params='0..1', enum=somewhere)
+             params='0..1', enum=[somewhere])
     def lsp_hover(arg1, pos, uri, result):
         """
         Display hover information somewhere ('cursor', 'info' or
@@ -517,7 +519,7 @@ def main(session, mock={}):
                  'position': pos,
                  'context':
                     {'includeDeclaration': arg1 != 'false'}
-                 }, params='0..1', enum=('true', 'false'))
+                 }, params='0..1', enum=[('true', 'false')])
     def lsp_references(arg1, uri, result):
         """
         Find the references to the identifier at the main cursor.

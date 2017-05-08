@@ -108,7 +108,8 @@ class Remote(object):
                          params = params,
                          docstring = utils.single_quoted(f.__doc__ or ''))
             if enum:
-                sh = "echo '" + '\n'.join(enum) + "'"
+                sh = '\n'.join('[$kak_token_to_complete -eq {}] && printf "{}\n"'.format(i, '\\n'.join(es))
+                               for i, es in enumerate(enum))
                 s += ' -shell-candidates %{' + sh + '} '
             s += ' %('
             s += r_pre(f)
