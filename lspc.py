@@ -253,12 +253,12 @@ def main(session, mock={}):
             d['pos'] = {'line': line - 1, 'character': column - 1}
             d['uri'] = uri = 'file://' + buffile
 
-            if filetype in langservers:
+            if cmd in langservers:
                 print(filetype + ' already spawned')
             else:
-                langservers[filetype] = Langserver(filetype, session, pwd, cmd, mock)
+                langservers[cmd] = Langserver(filetype, session, pwd, cmd, mock)
 
-            d['langserver'] = langserver = langservers[filetype]
+            d['langserver'] = langserver = langservers[cmd]
 
             q = Queue()
 
