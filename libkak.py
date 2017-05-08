@@ -25,7 +25,7 @@ class Remote(object):
         self.puns = True
         self.argnames = []
         self.sync_setup = False
-        self.required_names = set()
+        self.required_names = {'client'}
 
         def ret():
             x = self.listen()
@@ -65,7 +65,6 @@ class Remote(object):
 
     def onclient(self_or_session, client, sync=True):
         r = Remote._resolve(self_or_session)
-        r.required_names.add('client')
         r_pre = r.pre
         r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
         r.post = ')' + r.post
