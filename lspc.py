@@ -218,6 +218,7 @@ class Langserver(object):
         r.arg_config['disabled'] = (
             'kak_opt_lsp_' + self.filetype + '_disabled_diagnostics',
             libkak.Args.string)
+
         @r
         def _(timestamp, pipe, disabled):
             self.diagnostics[buffile] = defaultdict(list)
@@ -379,7 +380,10 @@ def main(session, mock={}):
         Makes sure that:
             * the language server is registered at the language server,
             * the language server has an up-to-date view on the buffer
-              (even if it is not saved).
+              (even if it is not saved),
+            * the options lsp_signature_help_chars and lsp_complete_chars
+              are set for the buffer according to what the language server
+              suggests. (These are examined at an InsertChar hook.)
 
         Hooked automatically to WinDisplay and filetype WinSetOption.
         """
