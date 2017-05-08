@@ -215,7 +215,7 @@ class Langserver(object):
         r.onclient(None, self.client_editing[buffile], sync=False, r=r)
 
         @r
-        def _(timestamp, reply):
+        def _(timestamp, pipe):
             self.diagnostics[buffile] = defaultdict(list)
             self.diagnostics[buffile]['timestamp'] = timestamp
             flags = [str(timestamp), '1|   ']
@@ -236,7 +236,7 @@ class Langserver(object):
                     'message': diag['message']
                 })
             # todo: Set for the other buffers too (but they need to be opened)
-            reply('set buffer=' + buffile + ' lsp_flags ' + utils.single_quoted(':'.join(flags)))
+            pipe('set buffer=' + buffile + ' lsp_flags ' + utils.single_quoted(':'.join(flags)))
 
 
 def main(session, mock={}):
@@ -331,7 +331,7 @@ def main(session, mock={}):
                 print('Calling', f.__name__, pprint.pformat(d)[:500])
                 msg = utils.safe_kwcall(f, d)
                 if msg:
-                    d['reply'](msg)
+                    d['pipe'](msg)
             return r(k)
         return decorate
 

@@ -144,9 +144,9 @@ class Remote(object):
         r = self.parse(line)
 
         try:
-            def reply(msg, sync=False):
+            def _pipe(msg, sync=False):
                 return pipe(self.session, msg, r['client'], sync)
-            r['reply'] = reply
+            r['pipe'] = _pipe
             return utils.safe_kwcall(self.f, r) if self.puns else self.f(r)
         except TypeError as e:
             print(str(e), file=sys.stderr)
@@ -428,8 +428,8 @@ def test_remote_commands_sync():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid, sync_setup=True)
-    ... def write_position(line, column, reply):
-    ...      reply(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''), sync=True)
+    ... def write_position(line, column, pipe):
+    ...      pipe(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''), sync=True)
     >>> pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
@@ -472,8 +472,8 @@ def test_remote_commands_async():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid)
-    ... def write_position(reply, line, column):
-    ...      reply(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
+    ... def write_position(pipe, line, column):
+    ...      pipe(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> pipe(kak.pid, 'write_position', 'unnamed0')
     >>> time.sleep(0.02)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)

@@ -237,13 +237,13 @@ def test_completion(kak, mock, send):
     d = dict(count = 0)
     @libkak.Remote.hook(kak.pid, 'buffer', 'InsertCompletionShow',
                         client='unnamed0', sync_setup=True)
-    def hook(reply):
+    def hook(pipe):
         print('count:', d['count'])
         time.sleep(0.1)
         if d['count'] == 0:
-            reply('exec <esc>a; lsp_complete')
+            pipe('exec <esc>a; lsp_complete')
         elif d['count'] == 1:
-            reply("exec '<c-n><esc>\%'")
+            pipe("exec '<c-n><esc>\%'")
         d['count'] += 1
     send('exec itest.')
 
