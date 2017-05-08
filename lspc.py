@@ -65,7 +65,7 @@ def info_somewhere(msg, pos, where):
 def complete_item(item):
     return (
         item['label'],
-        '{}\n\n{}'.format(item.get('detail'), item.get('documentation', '')[:500]),
+        '{}\n\n{}'.format(item.get('detail', ''), item.get('documentation', '')[:500]),
         '{} [{}]'.format(item['label'], item.get('kind', '?'))
     )
 
@@ -159,7 +159,8 @@ class Langserver(object):
             'rootPath': pwd,
             'capabilities': {}
         })
-        def initialized(result):
+        def initialized(msg):
+            result = msg['result']
             try:
                 signatureHelp = result['capabilities']['signatureHelpProvider']
                 self.sig_help_chars = signatureHelp['triggerCharacters']
@@ -197,9 +198,7 @@ class Langserver(object):
                     del self.cbs[msg['id']]
                     if 'error' in msg:
                         print('error', pprint.pformat(msg), file=sys.stderr)
-                        cb(msg.get('error'))
-                    else:
-                        cb(msg.get('result'))
+                    cb(msg)
                 if msg.get('method') == 'textDocument/publishDiagnostics':
                     self.publish_diagnostics(msg['params'])
 
@@ -296,6 +295,8 @@ def main(session, mock={}):
                 print(method, 'calling langserver')
                 langserver.call(method, utils.safe_kwcall(make_params, d))(q.put)
                 return q.get()
+            else:
+                return {'result': None}
 
         return sync
 
@@ -321,16 +322,39 @@ def main(session, mock={}):
             sync = make_sync(method, make_params)
             r.puns = False
             r.argnames = utils.argnames(sync) + utils.argnames(f)
+
             @functools.wraps(f)
             def k(d):
-                d['d'] = d
-                import pprint
-                #print('handler calls sync', pprint.pformat(d))
-                d['result'] = utils.safe_kwcall(sync, d)
-                print('Calling', f.__name__, pprint.pformat(d)[:500])
-                msg = utils.safe_kwcall(f, d)
-                if msg:
-                    d['pipe'](msg)
+                try:
+                    d['d'] = d
+                    #print('handler calls sync', pprint.pformat(d))
+                    msg = utils.safe_kwcall(sync, d)
+                    #print('sync called', status, result, pprint.pformat(d))
+                    if 'result' in msg:
+                        d['result'] = msg['result']
+                        print('Calling', f.__name__, pprint.pformat(d)[:500])
+                        msg = utils.safe_kwcall(f, d)
+                        if msg:
+                            d['pipe'](msg)
+                    else:
+                        print('Error: ', msg)
+                        d['pipe']('''
+                        echo -debug When handling {}:
+                        echo -debug {}
+                        echo -color red "Error from language server (see *debug* buffer)"
+                        '''.format(utils.single_quoted(f.__name__),
+                                   utils.single_quoted(pprint.pformat(msg))))
+                except:
+                    import traceback
+                    msg = f.__name__ + ' ' + traceback.format_exc()
+                    print(msg)
+                    d['pipe']('''
+                    echo -debug When handling {}:
+                    echo -debug {}
+                    echo -color red "Error from language client (see *debug* buffer)"
+                    '''.format(utils.single_quoted(f.__name__),
+                               utils.single_quoted(pprint.pformat(msg))))
+
             return r(k)
         return decorate
 
@@ -350,12 +374,15 @@ def main(session, mock={}):
         msg = 'echo synced'
         if buffile not in hooks_setup:
             hooks_setup.add(buffile)
-            sig = langserver.sig_help_chars
-            if sig:
-                msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_signature_help'.format(buffile, ''.join(sig))
-            compl = langserver.complete_chars
-            if compl:
-                msg += '\nhook -group lsp buffer={} InsertChar [{}] lsp_complete'.format(buffile, ''.join(compl))
+            def s(opt, chars):
+                if chars:
+                    m = '\nset buffer='
+                    m += buffile
+                    m += ' ' + opt
+                    m += ' ' + utils.single_quoted(''.join(chars))
+                    return m
+            msg += s('lsp_signature_help_chars', langserver.sig_help_chars)
+            msg += s('lsp_complete_chars', langserver.complete_chars)
         return msg
 
     @handler('textDocument/signatureHelp',
@@ -398,7 +425,7 @@ def main(session, mock={}):
 
         (Sets the variable lsp_completions.)
         """
-        cs = map(complete_item, result['items'])
+        cs = map(complete_item, result.get('items', []))
         s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
         setup = ''
         opt = 'option=lsp_completions'
@@ -420,7 +447,7 @@ def main(session, mock={}):
         """
         where = arg1 or 'cursor'
         diag = langserver.diagnostics[buffile]
-        if line in diag:
+        if line in diag and diag[line]:
             min_col = 98765
             msgs = []
             for d in diag[line]:
@@ -443,44 +470,46 @@ def main(session, mock={}):
         direction = arg1 or 'next'
         where = arg2 or 'none'
         diag = langserver.diagnostics[buffile]
+        if not diag:
+            libkak._debug('no diagnostics')
+            return
         if timestamp != diag.get('timestamp'):
             pipe('lsp_sync')
-        if timestamp == diag.get('timestamp'):
-            next_line = None
-            first_line = None
-            last_line = None
-            for other_line in six.iterkeys(diag):
-                if other_line == 'timestamp':
-                    continue
-                if not first_line or other_line < first_line:
-                    first_line = other_line
-                if not last_line or other_line > last_line:
-                    last_line = other_line
-                if next_line:
-                    if direction == 'prev':
-                        cmp = next_line < other_line < line
-                    else:
-                        cmp = next_line > other_line > line
-                else:
-                    if direction == 'prev':
-                        cmp = other_line < line
-                    else:
-                        cmp = other_line > line
-                if cmp:
-                    next_line = other_line
-            if not next_line and direction == 'prev':
-                next_line = last_line
-            if not next_line and direction == 'next':
-                next_line = first_line
+        next_line = None
+        first_line = None
+        last_line = None
+        for other_line in six.iterkeys(diag):
+            if other_line == 'timestamp':
+                continue
+            if not first_line or other_line < first_line:
+                first_line = other_line
+            if not last_line or other_line > last_line:
+                last_line = other_line
             if next_line:
-                y = next_line
-                x = diag[y][0]['col']
-                msg = libkak.select([((y, x), (y, x))])
-                if where == 'none':
-                    return where
+                if direction == 'prev':
+                    cmp = next_line < other_line < line
                 else:
-                    pipe(msg, sync=True)
-                    return 'lsp_diagnostics ' + where
+                    cmp = next_line > other_line > line
+            else:
+                if direction == 'prev':
+                    cmp = other_line < line
+                else:
+                    cmp = other_line > line
+            if cmp:
+                next_line = other_line
+        if not next_line and direction == 'prev':
+            next_line = last_line
+        if not next_line and direction == 'next':
+            next_line = first_line
+        if next_line:
+            y = next_line
+            x = diag[y][0]['col']
+            msg = libkak.select([((y, x), (y, x))])
+            if where == 'none':
+                return where
+            else:
+                pipe(msg, sync=True)
+                return 'lsp_diagnostics ' + where
 
     @handler('textDocument/hover',
              lambda pos, uri:
@@ -593,14 +622,16 @@ def main(session, mock={}):
         try %{add-highlighter flag_lines default lsp_flags}
     }
 
-    # hook -group lsp global InsertChar .* %{
-    #     if [[ $kak_hook_param in $kak_opt_lsp_signature_help_chars ]]; then
-    #         echo lsp_signature_help
-    #     ]]
-    #     if [[ $kak_hook_param in $kak_opt_lsp_complete_chars ]]; then
-    #         echo lsp_complete
-    #     ]]
-    # }
+    hook -group lsp global InsertChar .* %{
+        try %{
+            exec -draft <esc><space>h<a-k>[ %opt{lsp_complete_chars} ]<ret>
+            lsp_complete
+        }
+        try %{
+            exec -draft <esc><space>h<a-k>[ %opt{lsp_signature_help_chars} ]<ret>
+            lsp_signature_help
+        }
+    }
 
     hook -group lsp global WinSetOption filetype=.* lsp_sync
     hook -group lsp global WinDisplay .* lsp_sync
