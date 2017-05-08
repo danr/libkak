@@ -16,6 +16,7 @@ import utils
 
 
 class Remote(object):
+
     def __init__(self, session):
         self.session = session
         self.pre = lambda _: '%sh('
@@ -24,7 +25,6 @@ class Remote(object):
         self.puns = True
         self.argnames = []
         self.sync_setup = False
-        self.reply_fifo = None
         self.required_names = set()
 
         def ret():
@@ -92,8 +92,10 @@ class Remote(object):
                 sync_setup=False, sync_python_calls=False):
         r = Remote._resolve(self_or_session)
         r.sync_setup = sync_setup
+
         def ret():
             utils.fork(loop=True)(r.listen)
+
             @functools.wraps(r.f)
             def call_from_python(client, *args):
                 escaped = [utils.single_quoted(arg) for arg in args]
@@ -102,13 +104,14 @@ class Remote(object):
             return call_from_python
         r.ret = ret
         r_pre = r.pre
+
         def pre(f):
             s = 'def -allow-override -params {params} -docstring {docstring} {name}'
-            s = s.format(name = f.__name__,
-                         params = params,
-                         docstring = utils.single_quoted(f.__doc__ or ''))
+            s = s.format(name=f.__name__,
+                         params=params,
+                         docstring=utils.single_quoted(f.__doc__ or ''))
             if enum:
-                sh = '\n'.join('[$kak_token_to_complete -eq {}] && printf "{}\n"'.format(i, '\\n'.join(es))
+                sh = '\n'.join('[ $kak_token_to_complete -eq {} ] && printf "{}\n"'.format(i, '\\n'.join(es))
                                for i, es in enumerate(enum))
                 s += ' -shell-candidates %{' + sh + '} '
             s += ' %('
@@ -171,6 +174,7 @@ class Remote(object):
             d = {}
             if 'reply_fifo' in r:
                 d['reply_calls'] = 0
+
                 def reply(msg):
                     d['reply_calls'] += 1
                     with open(r['reply_fifo'], 'w') as fp:
@@ -210,17 +214,18 @@ def pipe(session, msg, client=None, sync=False):
     if sync:
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
-    #_debug('piping: ', msg.replace('\n', ' ')[:70])
+    # _debug('piping: ', msg.replace('\n', ' ')[:70])
     _debug('piping: ', msg)
     if hasattr(session, '__call__'):
         session(msg)
     else:
-        p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
+        p = Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
         p.stdin.write(utils.encode(msg))
         p.stdin.flush()
         p.stdin.close()
     if sync:
-        _debug(fifo + ' waiting for completion...', msg.replace('\n', ' ')[:60])
+        _debug(fifo + ' waiting for completion...',
+               msg.replace('\n', ' ')[:60])
         with open(fifo, 'r') as fifo_fp:
             fifo_fp.readline()
         _debug(fifo + ' going to clean up...')
@@ -240,7 +245,7 @@ def select(cursors):
     select 1.2,1.4:3.1,5.72
     """
     return 'select ' + ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos))
-                               for pos in cursors)
+                                for pos in cursors)
 
 
 def menu(options):
@@ -324,7 +329,8 @@ class Args(object):
                 return s
 
         def inner(s):
-            ms = [m.group(0) for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
+            ms = [m.group(0)
+                  for m in re.finditer(r'(.*?(?<!\\)(\\\\)*:|.+)', s)]
             ms = [m if i == len(ms) - 1 else rmlastcolon(m)
                   for i, m in enumerate(ms)]
             return [p(re.sub(r'\\(.)', '\g<1>', x)) for x in ms]
@@ -355,11 +361,12 @@ class Args(object):
                 if name in config:
                     splice, parse = config[name]
                 else:
-                    splice, parse = arg_config[name]
+                    splice, parse = _arg_config[name]
                 splices.append(splice)
                 args.append((name, parse))
             except KeyError:
                 pass
+
         def parse(line):
             _debug(argnames, line)
             params = [v.replace('_n', '\n').replace('_u', '_')
@@ -369,7 +376,7 @@ class Args(object):
         return splices, parse
 
 
-arg_config = {
+_arg_config = {
     'line':   ('kak_cursor_line',   int),
     'column': ('kak_cursor_column', int),
 
@@ -421,13 +428,14 @@ arg_config = {
 # Private utils
 
 
-def _mkfifo(active_fifos = {}):
+def _mkfifo(active_fifos={}):
     """
     Return a pair of a new fifo' filename and a cleanup function.
     """
     fifo_dir = tempfile.mkdtemp()
     fifo = os.path.join(fifo_dir, 'fifo')
     os.mkfifo(fifo)
+
     def rm():
         del active_fifos[fifo]
         os.remove(fifo)
@@ -459,12 +467,12 @@ def headless(ui='dummy', stdout=None):
     """
     Start a headless Kakoune process.
     """
-    p = Popen(['kak','-n','-ui',ui], stdout=stdout)
+    p = Popen(['kak', '-n', '-ui', ui], stdout=stdout)
     time.sleep(0.01)
     return p
 
 
-def test_remote_commands_sync():
+def _test_remote_commands_sync():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid, sync_setup=True)
@@ -490,7 +498,7 @@ def test_remote_commands_sync():
     pass
 
 
-def test_unicode_and_escaping():
+def _test_unicode_and_escaping():
     u"""
     >>> kak = headless()
     >>> pipe(kak.pid, u'exec iapa_bepa<ret>åäö_s_u_n<esc>%H', 'unnamed0')
@@ -508,7 +516,7 @@ def test_unicode_and_escaping():
     pass
 
 
-def test_remote_commands_async():
+def _test_remote_commands_async():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid)
@@ -534,7 +542,7 @@ def test_remote_commands_async():
     pass
 
 
-def test_commands_with_params():
+def _test_commands_with_params():
     u"""
     >>> kak = headless()
     >>> @Remote.command(kak.pid, params='2..', sync_python_calls=True)
@@ -563,5 +571,3 @@ def test_commands_with_params():
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
-
-

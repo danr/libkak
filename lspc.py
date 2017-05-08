@@ -65,7 +65,8 @@ def info_somewhere(msg, pos, where):
 def complete_item(item):
     return (
         item['label'],
-        '{}\n\n{}'.format(item.get('detail', ''), item.get('documentation', '')[:500]),
+        '{}\n\n{}'.format(item.get('detail', ''),
+                          item.get('documentation', '')[:500]),
         '{} [{}]'.format(item['label'], item.get('kind', '?'))
     )
 
@@ -103,6 +104,7 @@ def nice_sig(func_label, params, pn, pos):
 
 
 class Langserver(object):
+
     def __init__(self, filetype, session, pwd, cmd, mock={}):
         self.cbs = {}
         self.diagnostics = defaultdict(dict)
@@ -114,7 +116,8 @@ class Langserver(object):
         if cmd in mock:
             self.proc = mock[cmd]
         else:
-            self.proc = Popen(cmd.split(), stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
+            self.proc = Popen(cmd.split(), stdin=PIPE,
+                              stdout=PIPE, stderr=sys.stderr)
 
         t = Thread(target=Langserver.spawn, args=(self, session, pwd))
         t.start()
@@ -135,7 +138,6 @@ class Langserver(object):
         _private['n'] += 1
         return jsonrpc(obj)
 
-
     def call(self, method, params):
         """
         craft assigns to cbs
@@ -147,7 +149,6 @@ class Langserver(object):
             self.proc.stdin.flush()
             print('sent:', method)
         return k
-
 
     def spawn(self, session, pwd):
 
@@ -168,7 +169,8 @@ class Langserver(object):
                 self.sig_help_chars = []
 
             try:
-                completionProvider = result['capabilities']['completionProvider']
+                completionProvider = result[
+                    'capabilities']['completionProvider']
                 self.complete_chars = completionProvider['triggerCharacters']
             except KeyError:
                 self.complete_chars = []
@@ -192,7 +194,8 @@ class Langserver(object):
                     print(msg, file=sys.stderr)
                     print('closed:', self.proc.stdout.closed)
                     continue
-                print('Response from langserver:', '\n'.join(pprint.pformat(msg).split('\n')[:40]))
+                print('Response from langserver:', '\n'.join(
+                    pprint.pformat(msg).split('\n')[:40]))
                 if msg.get('id') in self.cbs:
                     cb = self.cbs[msg['id']]
                     del self.cbs[msg['id']]
@@ -208,7 +211,8 @@ class Langserver(object):
         buffile = msg['uri'][len('file://'):]
         if buffile not in self.client_editing:
             return
-        r = libkak.Remote.onclient(self.session, self.client_editing[buffile], sync=False)
+        r = libkak.Remote.onclient(
+            self.session, self.client_editing[buffile], sync=False)
 
         @r
         def _(timestamp, pipe):
@@ -223,6 +227,8 @@ class Langserver(object):
                 '{green}>> '
             ]
             for diag in msg['diagnostics']:
+                if diag['message'].startswith('E501'):
+                    continue
                 line0 = int(diag['range']['start']['line']) + 1
                 col0 = int(diag['range']['start']['character']) + 1
                 flags.append(str(line0) + '|' +
@@ -232,7 +238,8 @@ class Langserver(object):
                     'message': diag['message']
                 })
             # todo: Set for the other buffers too (but they need to be opened)
-            pipe('set buffer=' + buffile + ' lsp_flags ' + utils.single_quoted(':'.join(flags)))
+            pipe('set buffer=' + buffile + ' lsp_flags ' +
+                 utils.single_quoted(':'.join(flags)))
 
 
 def main(session, mock={}):
@@ -252,7 +259,8 @@ def main(session, mock={}):
             if cmd in langservers:
                 print(filetype + ' already spawned')
             else:
-                langservers[cmd] = Langserver(filetype, session, pwd, cmd, mock)
+                langservers[cmd] = Langserver(
+                    filetype, session, pwd, cmd, mock)
 
             d['langserver'] = langserver = langservers[cmd]
 
@@ -293,7 +301,8 @@ def main(session, mock={}):
 
             if method:
                 print(method, 'calling langserver')
-                langserver.call(method, utils.safe_kwcall(make_params, d))(q.put)
+                langserver.call(method, utils.safe_kwcall(
+                    make_params, d))(q.put)
                 return q.get()
             else:
                 return {'result': None}
@@ -358,7 +367,6 @@ def main(session, mock={}):
             return r(k)
         return decorate
 
-
     @handler()
     def lsp_sync(buffile, langserver):
         """
@@ -374,6 +382,7 @@ def main(session, mock={}):
         msg = 'echo synced'
         if buffile not in hooks_setup:
             hooks_setup.add(buffile)
+
             def s(opt, chars):
                 if chars:
                     m = '\nset buffer='
@@ -386,9 +395,9 @@ def main(session, mock={}):
         return msg
 
     @handler('textDocument/signatureHelp',
-             lambda pos, uri:
-                {'textDocument': {'uri': uri},
-                 'position': pos},
+             lambda pos, uri: {
+                'textDocument': {'uri': uri},
+                'position': pos},
              params='0..1', enum=[somewhere])
     def lsp_signature_help(arg1, pos, uri, result):
         """
@@ -412,9 +421,9 @@ def main(session, mock={}):
         return info_somewhere(label, pos, where)
 
     @handler('textDocument/completion',
-             lambda pos, uri:
-                {'textDocument': {'uri': uri},
-                 'position': pos})
+             lambda pos, uri: {
+                'textDocument': {'uri': uri},
+                'position': pos})
     def lsp_complete(line, column, timestamp, buffile, completers, result):
         """
         Complete at the main cursor.
@@ -512,9 +521,9 @@ def main(session, mock={}):
                 return 'lsp_diagnostics ' + where
 
     @handler('textDocument/hover',
-             lambda pos, uri:
-                {'textDocument': {'uri': uri},
-                 'position': pos},
+             lambda pos, uri: {
+                'textDocument': {'uri': uri},
+                'position': pos},
              params='0..1', enum=[somewhere])
     def lsp_hover(arg1, pos, uri, result):
         """
@@ -543,12 +552,12 @@ def main(session, mock={}):
         return info_somewhere(label, pos, where)
 
     @handler('textDocument/references',
-             lambda arg1, pos, uri:
-                {'textDocument': {'uri': uri},
-                 'position': pos,
-                 'context':
-                    {'includeDeclaration': arg1 != 'false'}
-                 }, params='0..1', enum=[('true', 'false')])
+             lambda arg1, pos, uri: {
+                'textDocument': {'uri': uri},
+                'position': pos,
+                'context': {
+                    'includeDeclaration': arg1 != 'false'}},
+             params='0..1', enum=[('true', 'false')])
     def lsp_references(arg1, uri, result):
         """
         Find the references to the identifier at the main cursor.
@@ -576,9 +585,9 @@ def main(session, mock={}):
             print('got no results', result)
 
     @handler('textDocument/definition',
-             lambda pos, uri:
-                {'textDocument': {'uri': uri},
-                 'position': pos})
+             lambda pos, uri: {
+                'textDocument': {'uri': uri},
+                'position': pos})
     def lsp_goto_definition(result):
         """
         Go to the definition of the identifier at the main cursor.
@@ -607,7 +616,6 @@ def main(session, mock={}):
             line0, _ = p0
             options.append((u'{}:{}'.format(uri, line0), action))
             return libkak.menu(options)
-
 
     libkak.pipe(session, """#kak
     remove-hooks global lsp

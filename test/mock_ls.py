@@ -27,13 +27,14 @@ class MockStdio(object):
     >>> print(io.readline().decode('utf-8'))
     <BLANKLINE>
     """
+
     def __init__(self, q):
         self.q = q
         self.closed = False
 
     def write(self, msg):
         for c in msg:
-            self.q.put(chr(c) if isinstance(c,int) else c)
+            self.q.put(chr(c) if isinstance(c, int) else c)
 
     def flush(self):
         pass
@@ -65,6 +66,7 @@ class MockStdio(object):
 
 
 class MockPopen(object):
+
     def __init__(self, q_in, q_out):
         self.stdin = MockStdio(q_in)
         self.stdout = MockStdio(q_out)
@@ -150,6 +152,7 @@ def setup_test(f):
         mock = MockPopen(p, q)
         kak = libkak.headless(ui='json' if debug else 'dummy',
                               stdout=subprocess.PIPE)
+
         @utils.fork(loop=True)
         def json_ui_monitor():
             try:
@@ -174,7 +177,6 @@ def setup_test(f):
         declare-option str lsp_servers somefiletype:mock
         lsp_sync # why does it not trigger on WinSetOption?
         """)
-
 
         print('listening for initalization...')
         obj = process(mock)
@@ -234,7 +236,8 @@ def test_sighelp(kak, mock, send):
 
 @setup_test
 def test_completion(kak, mock, send):
-    d = dict(count = 0)
+    d = dict(count=0)
+
     @libkak.Remote.hook(kak.pid, 'buffer', 'InsertCompletionShow',
                         client='unnamed0', sync_setup=True)
     def hook(pipe):
@@ -276,5 +279,3 @@ if __name__ == '__main__':
     test_completion(debug)
     test_sighelp(debug)
     test_hover(debug)
-
-
