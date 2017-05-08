@@ -248,7 +248,7 @@ def main(session, mock={}):
 
     def make_sync(method, make_params):
 
-        def sync(d, line, column, buffile, filetype, timestamp, pwd, cmd, client):
+        def sync(d, line, column, buffile, filetype, timestamp, pwd, cmd, client, reply):
 
             d['pos'] = {'line': line - 1, 'character': column - 1}
             d['uri'] = uri = 'file://' + buffile
@@ -265,11 +265,12 @@ def main(session, mock={}):
             old_timestamp = timestamps.get((filetype, buffile))
             if old_timestamp == timestamp:
                 print('no need to send update')
+                reply('')
             else:
                 timestamps[(filetype, buffile)] = timestamp
                 with tempfile.NamedTemporaryFile() as tmp:
                     write = "eval -no-hooks 'write {}'".format(tmp.name)
-                    libkak.pipe(session, write, client=client, sync=True)
+                    libkak.pipe(reply, write, client=client, sync=True)
                     print('finished writing to tempfile')
                     contents = open(tmp.name, 'r').read()
                 langserver.client_editing[buffile] = client
@@ -318,6 +319,7 @@ def main(session, mock={}):
                             break
                         fi
                     done <<< "$kak_opt_lsp_servers"''' + r.post
+            r.setup_reply_channel()
             r.arg_config['cmd'] = ('cmd', libkak.Args.string)
             sync = make_sync(method, make_params)
             r.puns = False

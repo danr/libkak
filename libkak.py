@@ -24,6 +24,8 @@ class Remote(object):
         self.puns = True
         self.argnames = []
         self.sync_setup = False
+        self.reply_fifo = None
+        self.required_names = set()
 
         def ret():
             x = self.listen()
@@ -38,6 +40,23 @@ class Remote(object):
         else:
             return Remote(self_or_session)
 
+    def setup_reply_channel(self_or_session):
+        r = Remote._resolve(self_or_session)
+        r_pre = r.pre
+        r.pre = lambda f: r_pre(f) + '''
+                    __reply_fifo_dir=$(mktemp -d)
+                    __reply_fifo="${__reply_fifo_dir}/fifo"
+                    mkfifo ${__reply_fifo}
+                '''
+        r.post = '''
+            \ncat ${__reply_fifo}
+            rm ${__reply_fifo}
+            rmdir ${__reply_fifo_dir}
+        ''' + r.post
+        r.arg_config['reply_fifo'] = ('__reply_fifo', Args.string)
+        r.required_names.add('reply_fifo')
+        return r
+
     def asynchronous(self_or_session):
         r = Remote._resolve(self_or_session)
         r_ret = r.ret
@@ -46,6 +65,7 @@ class Remote(object):
 
     def onclient(self_or_session, client, sync=True):
         r = Remote._resolve(self_or_session)
+        r.required_names.add('client')
         r_pre = r.pre
         r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
         r.post = ')' + r.post
@@ -98,7 +118,7 @@ class Remote(object):
         return r
 
     def _argnames(self):
-        names = {'client'}
+        names = set(self.required_names)
         names.update(self.argnames)
         if self.puns:
             names.update(utils.argnames(self.f))
@@ -147,7 +167,21 @@ class Remote(object):
             def _pipe(msg, sync=False):
                 return pipe(self.session, msg, r['client'], sync)
             r['pipe'] = _pipe
-            return utils.safe_kwcall(self.f, r) if self.puns else self.f(r)
+            d = {}
+            if 'reply_fifo' in r:
+                d['reply_calls'] = 0
+                def reply(msg):
+                    d['reply_calls'] += 1
+                    with open(r['reply_fifo'], 'w') as fp:
+                        fp.write(msg)
+                r['reply'] = reply
+            result = utils.safe_kwcall(self.f, r) if self.puns else self.f(r)
+            if 'reply_fifo' in r:
+                if d['reply_calls'] != 1:
+                    print('!!! [ERROR] Must make exactly 1 call to reply, ' +
+                          self.f + ' ' + self.r + ' made ' + d['reply_calls'],
+                          file=sys.stderr)
+            return result
         except TypeError as e:
             print(str(e), file=sys.stderr)
 
@@ -175,10 +209,15 @@ def pipe(session, msg, client=None, sync=False):
     if sync:
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
-    _debug('piping: ', msg.replace('\n', ' ')[:70])
-    p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
-    _debug(session, msg[:500])
-    p.communicate(utils.encode(msg))
+    #_debug('piping: ', msg.replace('\n', ' ')[:70])
+    _debug('piping: ', msg)
+    if hasattr(session, '__call__'):
+        session(msg)
+    else:
+        p=Popen(['kak', '-p', str(session).rstrip()], stdin=PIPE)
+        p.stdin.write(utils.encode(msg))
+        p.stdin.flush()
+        p.stdin.close()
     if sync:
         _debug(fifo + ' waiting for completion...', msg.replace('\n', ' ')[:60])
         with open(fifo, 'r') as fifo_fp:

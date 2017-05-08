@@ -249,6 +249,7 @@ def test_completion(kak, mock, send):
 
     print('listening...')
     obj = process(mock)
+    pprint(obj)
     assert(obj['method'] == 'textDocument/didChange')
     assert(obj['params']['contentChanges'][0]['text'] == 'test.\n')
     obj = process(mock)
