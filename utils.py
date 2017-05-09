@@ -3,6 +3,22 @@
 from threading import Thread
 import six
 import inspect
+import json
+
+
+def range(r):
+    y0 = int(r['start']['line']) + 1
+    x0 = int(r['start']['character']) + 1
+    y1 = int(r['end']['line']) + 1
+    x1 = int(r['end']['character'])
+    return ((y0, x0), (y1, x1))
+
+
+def jsonrpc(obj):
+    obj['jsonrpc'] = '2.0'
+    msg = json.dumps(obj)
+    msg = u"Content-Length: {0}\r\n\r\n{1}".format(len(msg), msg)
+    return msg.encode('utf-8')
 
 
 def deindent(s):

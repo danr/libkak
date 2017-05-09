@@ -137,7 +137,7 @@ def process(mock, result=None):
         result = {'items': items}
     else:
         raise RuntimeError('Unknown method: ' + method)
-    msg = lspc.jsonrpc({
+    msg = utils.jsonrpc({
         'id': obj['id'],
         'result': result
     })

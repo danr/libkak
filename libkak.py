@@ -40,6 +40,7 @@ class Remote(object):
         else:
             return Remote(self_or_session)
 
+    @staticmethod
     def setup_reply_channel(self_or_session):
         r = Remote._resolve(self_or_session)
         r_pre = r.pre
@@ -57,21 +58,24 @@ class Remote(object):
         r.required_names.add('reply_fifo')
         return r
 
+    @staticmethod
     def asynchronous(self_or_session):
         r = Remote._resolve(self_or_session)
         r_ret = r.ret
         r.ret = lambda: utils.fork()(r_ret)
         return r
 
+    @staticmethod
     def onclient(self_or_session, client, sync=True):
         r = Remote._resolve(self_or_session)
         r_pre = r.pre
         r.pre = lambda f: 'eval -client ' + client + ' %(' + r_pre(f)
         r.post = ')' + r.post
         if not sync:
-            r.asynchronous()
+            r.asynchronous(r)
         return r
 
+    @staticmethod
     def hook(self_or_session, scope, name, group=None, filter='.*',
              sync_setup=False, client=None):
         r = Remote._resolve(self_or_session)
@@ -84,12 +88,13 @@ class Remote(object):
         r.post = ')' + r.post
         r.ret = lambda: utils.fork(loop=True)(r.listen)
         if client:
-            r.onclient(client)
+            r.onclient(r, client)
         return r
 
     def _f_name(self):
         return self.f.__name__.replace('_', '-')
 
+    @staticmethod
     def command(self_or_session, params='0', enum=[],
                 sync_setup=False, sync_python_calls=False):
         r = Remote._resolve(self_or_session)
@@ -490,7 +495,7 @@ def _test_remote_commands_sync():
     >>> r = Remote(kak.pid)
     >>> r.puns = False
     >>> r.required_names.add('selection')
-    >>> print(r.onclient('unnamed0', sync=True)(lambda d: d['selection']))
+    >>> print(r.onclient(r, 'unnamed0', sync=True)(lambda d: d['selection']))
     1:1, 1:5
     >>> q = Queue()
     >>> Remote.onclient(kak.pid, 'unnamed0', sync=False)(
