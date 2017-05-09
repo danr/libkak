@@ -78,15 +78,15 @@ class Langserver(object):
         })
         def initialized(msg):
             result = msg['result']
+            capabilities = result.get('capabilities', {})
             try:
-                signatureHelp = result['capabilities']['signatureHelpProvider']
+                signatureHelp = capabilities['signatureHelpProvider']
                 self.sig_help_chars = signatureHelp['triggerCharacters']
             except KeyError:
                 self.sig_help_chars = []
 
             try:
-                completionProvider = result[
-                    'capabilities']['completionProvider']
+                completionProvider = capabilities['completionProvider']
                 self.complete_chars = completionProvider['triggerCharacters']
             except KeyError:
                 self.complete_chars = []

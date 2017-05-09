@@ -253,6 +253,8 @@ def main(session, mock={}):
                     m += ' ' + opt
                     m += ' ' + utils.single_quoted(''.join(chars))
                     return m
+                else:
+                    return ''
             msg += s('lsp_signature_help_chars', langserver.sig_help_chars)
             msg += s('lsp_complete_chars', langserver.complete_chars)
         return msg
@@ -266,6 +268,8 @@ def main(session, mock={}):
         """
         Write signature help by the cursor, info or docsclient.
         """
+        if not result:
+            return
         where = arg1 or 'cursor'
         try:
             active = result['signatures'][result['activeSignature']]
@@ -297,6 +301,8 @@ def main(session, mock={}):
 
         The option lsp_completions is prepended to the completers if missing.
         """
+        if not result:
+            return
         cs = map(complete_item, result.get('items', []))
         s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
         setup = ''
