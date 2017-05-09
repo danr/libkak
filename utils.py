@@ -24,14 +24,14 @@ def jsonrpc(obj):
 def deindent(s):
     """
     >>> print(deindent('''
-    ...     apa
     ...       bepa
+    ...     apa
     ...
     ...      cepa
     ...    '''))
     <BLANKLINE>
-    apa
       bepa
+    apa
     <BLANKLINE>
      cepa
     <BLANKLINE>

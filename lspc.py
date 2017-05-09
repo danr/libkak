@@ -195,9 +195,9 @@ def main(session, mock={}):
             def k(d):
                 try:
                     d['d'] = d
-                    #print('handler calls sync', pprint.pformat(d))
+                    # print('handler calls sync', pprint.pformat(d))
                     msg = utils.safe_kwcall(sync, d)
-                    #print('sync called', status, result, pprint.pformat(d))
+                    # print('sync called', status, result, pprint.pformat(d))
                     if 'result' in msg:
                         d['result'] = msg['result']
                         print('Calling', f.__name__, pprint.pformat(d)[:500])
