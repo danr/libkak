@@ -33,6 +33,8 @@ hook -group lsp global NormalIdle .* %{
 
 # Aggressive diagnostics
 hook -group lsp global InsertEnd .* lsp-sync
+
+
 ```
 
 Then attach `lspc.py` to a running kak process. Say it has PID 4032 (you see
@@ -40,5 +42,17 @@ this in the lower right corner), then issue:
 
     python lspc.py 4032
 
-And hope something works!
+If you want to start this from Kakoune add something like this to your kakrc:
 
+```kak
+def lsp-start %{
+    %sh{
+        ( python $HOME/code/libkak/lspc.py $kak_session
+        ) > /dev/null 2>&1 < /dev/null &
+    }
+}
+```
+
+Change the path accordingly.
+
+Happy hacking!
