@@ -418,10 +418,10 @@ def main(session, mock={}):
             func_label = active.get('label', '')
             params = active['parameters']
             label = nice_sig(func_label, params, pn, pos)
-        except KeyError:
+        except LookupError:
             try:
                 label = pyls_signatureHelp(result, pos)
-            except KeyError:
+            except LookupError:
                 if not result.get('signatures'):
                     label = ''
                 else:
