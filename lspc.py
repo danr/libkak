@@ -58,11 +58,12 @@ def info_somewhere(msg, pos, where):
 
 
 def complete_item(item):
+    # item['kind'] is ignored for now
     return (
         item['label'],
         '{}\n\n{}'.format(item.get('detail', ''),
                           item.get('documentation', '')[:500]),
-        '{} [{}]'.format(item['label'], item.get('kind', '?'))
+        item['label']
     )
 
 
