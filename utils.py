@@ -5,6 +5,33 @@ import six
 import inspect
 
 
+def deindent(s):
+    """
+    >>> print(deindent('''
+    ...     apa
+    ...       bepa
+    ...
+    ...      cepa
+    ...    '''))
+    <BLANKLINE>
+    apa
+      bepa
+    <BLANKLINE>
+     cepa
+    <BLANKLINE>
+    """
+    lines = s.split('\n')
+
+    chop = 98765
+    for line in lines:
+        if line.strip():
+            m = len(line) - len(line.lstrip())
+            if m < chop:
+                chop = m
+
+    return '\n'.join(line[chop:] for line in lines)
+
+
 def fork(loop=False):
     def decorate(f):
         def target():

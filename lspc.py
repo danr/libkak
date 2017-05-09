@@ -211,7 +211,7 @@ class Langserver(object):
         if not msg['uri'].startswith('file://'):
             return
         buffile = msg['uri'][len('file://'):]
-        if buffile not in self.client_editing:
+        if buffile not in self.client_editing or not self.client_editing[buffile]:
             return
         r = libkak.Remote.onclient(
             self.session, self.client_editing[buffile], sync=False)
@@ -248,8 +248,6 @@ class Langserver(object):
 
 
 def main(session, mock={}):
-    diagnostics = defaultdict(list)
-    hooks_setup = set()
 
     langservers = {}
     timestamps = {}
@@ -372,6 +370,8 @@ def main(session, mock={}):
             return r(k)
         return decorate
 
+    chars_setup = set()
+
     @handler()
     def lsp_sync(buffile, langserver):
         """
@@ -388,8 +388,8 @@ def main(session, mock={}):
         Hooked automatically to WinDisplay and filetype WinSetOption.
         """
         msg = 'echo synced'
-        if buffile not in hooks_setup:
-            hooks_setup.add(buffile)
+        if buffile not in chars_setup:
+            chars_setup.add(buffile)
 
             def s(opt, chars):
                 if chars:
@@ -404,8 +404,8 @@ def main(session, mock={}):
 
     @handler('textDocument/signatureHelp',
              lambda pos, uri: {
-                'textDocument': {'uri': uri},
-                'position': pos},
+                 'textDocument': {'uri': uri},
+                 'position': pos},
              params='0..1', enum=[somewhere])
     def lsp_signature_help(arg1, pos, uri, result):
         """
@@ -430,24 +430,26 @@ def main(session, mock={}):
 
     @handler('textDocument/completion',
              lambda pos, uri: {
-                'textDocument': {'uri': uri},
-                'position': pos})
+                 'textDocument': {'uri': uri},
+                 'position': pos})
     def lsp_complete(line, column, timestamp, buffile, completers, result):
         """
         Complete at the main cursor.
 
         Example to force completion at word begin:
 
-        map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp_complete)<ret>'
+        map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp-complete)<ret>'
 
-        (Sets the variable lsp_completions.)
+        The option lsp_completions is prepended to the completers if missing.
         """
         cs = map(complete_item, result.get('items', []))
         s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
         setup = ''
         opt = 'option=lsp_completions'
         if opt not in completers:
-            setup = 'set -add buffer=' + buffile + ' completers ' + opt + '\n'
+            # put ourself as the first completer if not listed
+            setup = 'set buffer=' + buffile + ' completers '
+            setup += ':'.join([opt] + completers) + '\n'
         return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
     @handler(params='0..1', enum=[somewhere])
@@ -459,7 +461,7 @@ def main(session, mock={}):
         Hook this to NormalIdle if you want:
 
         hook -group lsp global NormalIdle .* %{
-            lsp_diagnostics cursor
+            lsp-diagnostics cursor
         }
         """
         where = arg1 or 'cursor'
@@ -481,8 +483,8 @@ def main(session, mock={}):
 
         Example configuration:
 
-        map global user n ':lsp_diagonstics_jump next cursor<ret>'
-        map global user p ':lsp_diagonstics_jump prev cursor<ret>'
+        map global user n ':lsp-diagonstics-jump next cursor<ret>'
+        map global user p ':lsp-diagonstics-jump prev cursor<ret>'
         """
         direction = arg1 or 'next'
         where = arg2 or 'none'
@@ -491,7 +493,7 @@ def main(session, mock={}):
             libkak._debug('no diagnostics')
             return
         if timestamp != diag.get('timestamp'):
-            pipe('lsp_sync')
+            pipe('lsp-sync')
         next_line = None
         first_line = None
         last_line = None
@@ -526,12 +528,12 @@ def main(session, mock={}):
                 return where
             else:
                 pipe(msg, sync=True)
-                return 'lsp_diagnostics ' + where
+                return 'lsp-diagnostics ' + where
 
     @handler('textDocument/hover',
              lambda pos, uri: {
-                'textDocument': {'uri': uri},
-                'position': pos},
+                 'textDocument': {'uri': uri},
+                 'position': pos},
              params='0..1', enum=[somewhere])
     def lsp_hover(arg1, pos, uri, result):
         """
@@ -541,7 +543,7 @@ def main(session, mock={}):
         Hook this to NormalIdle if you want:
 
         hook -group lsp global NormalIdle .* %{
-            lsp_hover cursor
+            lsp-hover cursor
         }
         """
         where = arg1 or 'cursor'
@@ -561,10 +563,10 @@ def main(session, mock={}):
 
     @handler('textDocument/references',
              lambda arg1, pos, uri: {
-                'textDocument': {'uri': uri},
-                'position': pos,
-                'context': {
-                    'includeDeclaration': arg1 != 'false'}},
+                 'textDocument': {'uri': uri},
+                 'position': pos,
+                 'context': {
+                     'includeDeclaration': arg1 != 'false'}},
              params='0..1', enum=[('true', 'false')])
     def lsp_references(arg1, uri, result):
         """
@@ -594,8 +596,8 @@ def main(session, mock={}):
 
     @handler('textDocument/definition',
              lambda pos, uri: {
-                'textDocument': {'uri': uri},
-                'position': pos})
+                 'textDocument': {'uri': uri},
+                 'position': pos})
     def lsp_goto_definition(result):
         """
         Go to the definition of the identifier at the main cursor.
@@ -640,16 +642,16 @@ def main(session, mock={}):
     hook -group lsp global InsertChar .* %{
         try %{
             exec -draft <esc><space>h<a-k>[ %opt{lsp_complete_chars} ]<ret>
-            lsp_complete
+            lsp-complete
         }
         try %{
             exec -draft <esc><space>h<a-k>[ %opt{lsp_signature_help_chars} ]<ret>
-            lsp_signature_help
+            lsp-signature-help
         }
     }
 
-    hook -group lsp global WinSetOption filetype=.* lsp_sync
-    hook -group lsp global WinDisplay .* lsp_sync
+    hook -group lsp global WinSetOption filetype=.* lsp-sync
+    hook -group lsp global WinDisplay .* lsp-sync
     """)
 
 

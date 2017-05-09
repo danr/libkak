@@ -87,6 +87,9 @@ class Remote(object):
             r.onclient(client)
         return r
 
+    def _f_name(self):
+        return self.f.__name__.replace('_', '-')
+
     def command(self_or_session, params='0', enum=[],
                 sync_setup=False, sync_python_calls=False):
         r = Remote._resolve(self_or_session)
@@ -98,7 +101,7 @@ class Remote(object):
             @functools.wraps(r.f)
             def call_from_python(client, *args):
                 escaped = [utils.single_quoted(arg) for arg in args]
-                pipe(r.session, ' '.join([r.f.__name__] + escaped), client,
+                pipe(r.session, ' '.join([r._f_name()] + escaped), client,
                      sync=sync_python_calls)
             return call_from_python
         r.ret = ret
@@ -106,9 +109,9 @@ class Remote(object):
 
         def pre(f):
             s = 'def -allow-override -params {params} -docstring {docstring} {name}'
-            s = s.format(name=f.__name__,
+            s = s.format(name=r._f_name(),
                          params=params,
-                         docstring=utils.single_quoted(f.__doc__ or ''))
+                         docstring=utils.single_quoted(utils.deindent(f.__doc__ or '')))
             if enum:
                 sh = '\n'.join('[ $kak_token_to_complete -eq {} ] && printf "{}\n"'.format(i, '\\n'.join(es))
                                for i, es in enumerate(enum))
@@ -477,12 +480,17 @@ def _test_remote_commands_sync():
     >>> @Remote.command(kak.pid, sync_setup=True)
     ... def write_position(line, column, pipe):
     ...      pipe(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''), sync=True)
-    >>> pipe(kak.pid, 'write_position', 'unnamed0', sync=True)
+    >>> pipe(kak.pid, 'write-position', 'unnamed0', sync=True)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')
     >>> pipe(kak.pid, 'exec \%H', 'unnamed0', sync=True)
     >>> print(Remote.onclient(kak.pid, 'unnamed0')(
     ...     lambda selection: selection))
+    1:1, 1:5
+    >>> r = Remote(kak.pid)
+    >>> r.puns = False
+    >>> r.required_names.add('selection')
+    >>> print(r.onclient('unnamed0', sync=True)(lambda d: d['selection']))
     1:1, 1:5
     >>> q = Queue()
     >>> Remote.onclient(kak.pid, 'unnamed0', sync=False)(
@@ -521,7 +529,7 @@ def _test_remote_commands_async():
     >>> @Remote.command(kak.pid)
     ... def write_position(pipe, line, column):
     ...      pipe(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
-    >>> pipe(kak.pid, 'write_position', 'unnamed0')
+    >>> pipe(kak.pid, 'write-position', 'unnamed0')
     >>> time.sleep(0.02)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
     >>> write_position('unnamed0')

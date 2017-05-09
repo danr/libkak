@@ -175,7 +175,7 @@ def setup_test(f):
         declare-option str docsclient
         set window filetype somefiletype
         declare-option str lsp_servers somefiletype:mock
-        lsp_sync # why does it not trigger on WinSetOption?
+        lsp-sync # why does it not trigger on WinSetOption?
         """)
 
         print('listening for initalization...')
@@ -200,7 +200,7 @@ def setup_test(f):
 
 @setup_test
 def test_hover(kak, mock, send):
-    send('lsp_hover docsclient')
+    send('lsp-hover docsclient')
     while True:
         obj = process(mock)
         if obj['method'] == 'textDocument/hover':
@@ -223,7 +223,7 @@ def test_sighelp(kak, mock, send):
             c += 1
             if c == 1:
                 # good, triggered correctly, now onto docsclient
-                send("exec '<a-;>:lsp_signature_help docsclient<ret>'", sync=False)
+                send("exec '<a-;>:lsp-signature-help docsclient<ret>'", sync=False)
             if c == 2:
                 break
     time.sleep(0.1)
@@ -242,9 +242,8 @@ def test_completion(kak, mock, send):
                         client='unnamed0', sync_setup=True)
     def hook(pipe):
         print('count:', d['count'])
-        time.sleep(0.1)
         if d['count'] == 0:
-            pipe('exec <esc>a; lsp_complete')
+            pipe('exec <esc>a; lsp-complete')
         elif d['count'] == 1:
             pipe("exec '<c-n><esc>\%'")
         d['count'] += 1

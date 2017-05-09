@@ -12,27 +12,27 @@ decl str lsp_servers %{
 }
 
 # Ignore E501 for python (Line length > 80 chars)
-decl str lsp_python_disabled_diagnostics '^E501'
+decl str lsp-python-disabled-diagnostics '^E501'
 
 # Example keybindings
-map -docstring %{Goto definition}     global user . ':lsp_goto_definition<ret>'
-map -docstring %{Select references}   global user r ':lsp_references<ret>'
-map -docstring %{Hover help}          global user h ':lsp_hover docsclient<ret>'
-map -docstring %{Next diagnostic}     global user j ':lsp_diagnostics next cursor<ret>'
-map -docstring %{Previous diagnostic} global user k ':lsp_diagnostics prev cursor<ret>'
+map -docstring %{Goto definition}     global user . ':lsp-goto-definition<ret>'
+map -docstring %{Select references}   global user r ':lsp-references<ret>'
+map -docstring %{Hover help}          global user h ':lsp-hover docsclient<ret>'
+map -docstring %{Next diagnostic}     global user j ':lsp-diagnostics next cursor<ret>'
+map -docstring %{Previous diagnostic} global user k ':lsp-diagnostics prev cursor<ret>'
 
 # Manual completion and signature help when needed
-map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp_complete)<ret>'
-map global insert <a-h> '<a-;>:lsp_signature_help<ret>'
+map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp-complete)<ret>'
+map global insert <a-h> '<a-;>:lsp-signature-help<ret>'
 
 # Hover and diagnostics on idle
 hook -group lsp global NormalIdle .* %{
-    lsp_diagnostics cursor
-    lsp_hover cursor
+    lsp-diagnostics cursor
+    lsp-hover cursor
 }
 
 # Aggressive diagnostics
-hook -group lsp global InsertEnd .* lsp_sync
+hook -group lsp global InsertEnd .* lsp-sync
 ```
 
 Then attach `lspc.py` to a running kak process. Say it has PID 4032 (you see
