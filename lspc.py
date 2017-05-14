@@ -46,7 +46,7 @@ def info_somewhere(msg, pos, where):
         tmp = tempfile.mktemp()
         open(tmp, 'wb').write(utils.encode(msg))
         return """
-            eval -try-client %opt[docsclient] %[
+            eval -no-hooks -try-client %opt[docsclient] %[
               edit! -scratch '*doc*'
               exec \%d|cat<space> {tmp}<ret>
               exec \%|fmt<space> - %val[window_width] <space> -s <ret>
@@ -496,11 +496,11 @@ def main(session, mock={}):
 
     hook -group lsp global InsertChar .* %{
         try %{
-            exec -draft <esc><space>h<a-k>[ %opt{lsp_complete_chars} ]<ret>
+            exec -no-hooks -draft <esc><space>h<a-k>[ %opt{lsp_complete_chars} ]<ret>
             lsp-complete
         }
         try %{
-            exec -draft <esc><space>h<a-k>[ %opt{lsp_signature_help_chars} ]<ret>
+            exec -no-hooks -draft <esc><space>h<a-k>[ %opt{lsp_signature_help_chars} ]<ret>
             lsp-signature-help
         }
     }
