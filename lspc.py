@@ -109,7 +109,7 @@ def main(session, mock={}):
         def sync(d, line, column, buffile, filetype, timestamp, pwd, cmd, client, reply):
 
             d['pos'] = {'line': line - 1, 'character': column - 1}
-            d['uri'] = uri = 'file://' + buffile
+            d['uri'] = uri = 'file://' + six.moves.urllib.parse.quote(buffile)
 
             if cmd in langservers:
                 print(filetype + ' already spawned')
@@ -475,6 +475,7 @@ def main(session, mock={}):
         for uri, (p0, p1) in c:
             if uri.startswith('file://'):
                 uri = uri[len('file://'):]
+                uri = six.moves.urllib.parse.unquote(uri)
                 action = 'edit {}; {}'.format(uri, libkak.select([(p0, p1)]))
             else:
                 action = 'echo -color red Cannot open {}'.format(uri)
