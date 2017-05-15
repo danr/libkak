@@ -217,7 +217,11 @@ def pipe(session, msg, client=None, sync=False):
     0
     """
     if client:
-        msg = u'eval -client {} {}'.format(client, utils.single_quoted(msg))
+        import tempfile
+        name = tempfile.mktemp()
+        with open(name, 'wb') as tmp:
+            tmp.write(utils.encode(msg))
+        msg = u'eval -client {} "%sh`cat {}; rm {}`"'.format(client, name, name)
     if sync:
         fifo, fifo_cleanup = _mkfifo()
         msg += u'\n%sh(echo done > {})'.format(fifo)
