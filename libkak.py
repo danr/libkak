@@ -259,17 +259,24 @@ def select(cursors):
                                 for pos in cursors)
 
 
-def menu(options):
+def menu(options, auto_single=True):
     """
     A command to make a menu.
 
     Takes a list of 2-tuples of an entry and the command it executes.
 
     >>> print(menu([('one', 'echo one'), ('two', 'echo two')]))
-    menu -auto-single 'one' 'echo one' 'two' 'echo two'
+    menu 'one' 'echo one' 'two' 'echo two'
+    >>> print(menu([('one', 'echo one')]))
+    echo one
+    >>> print(menu([('one', 'echo one')], auto_single=False))
+    menu 'one' 'echo one'
     """
+    options = list(options)
+    if len(options) == 1 and auto_single:
+        return options[0][1]
     opts = utils.join(map(utils.single_quoted, it.chain(*options)))
-    return 'menu -auto-single ' + opts
+    return 'menu ' + opts
 
 
 def complete(line, column, timestamp, completions):

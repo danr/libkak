@@ -19,9 +19,46 @@ import re
 from langserver import Langserver
 
 
+def drop_prefix(s, prefix):
+    """
+    If s starts with prefix, drop it, otherwise return s.
+
+    >>> print(drop_prefix('apabepa', 'ap'))
+    abepa
+    >>> print(drop_prefix('apabepa', 'cepa'))
+    apabepa
+    """
+    if s.startswith(prefix):
+        return s[len(prefix):]
+    else:
+        return s
+
+
+def uri_to_file(uri):
+    """
+    >>> print(uri_to_file('file:///home/user/proj/%40types.js'))
+    /home/user/proj/@types.js
+    >>> print(uri_to_file('http://example.com'))
+    None
+    """
+    if uri.startswith('file://'):
+        f = drop_prefix(uri, 'file://')
+        return six.moves.urllib.parse.unquote(f)
+    else:
+        return None
+
+
+def edit_uri_select(uri, positions):
+    filename = uri_to_file(uri)
+    if filename:
+        return 'edit {}; {}'.format(filename, libkak.select(positions))
+    else:
+        return 'echo -color red Cannot open {}'.format(uri)
+
+
 def format_pos(pos):
     """
-    >>> format_pos({'line': 5, 'character': 0})
+    >>> print(format_pos({'line': 5, 'character': 0}))
     6.1
     """
     return '{}.{}'.format(pos['line'] + 1, pos['character'] + 1)
@@ -465,27 +502,25 @@ def main(session, mock={}):
                  'context': {
                      'includeDeclaration': arg1 != 'false'}},
              params='0..1', enum=[('true', 'false')])
-    def lsp_references(arg1, uri, result):
+    def lsp_references(arg1, pwd, result):
         """
         Find the references to the identifier at the main cursor.
 
         Takes one argument, whether to include the declaration or not.
         (default: true)
         """
-        c = []
-        other = 0
+        m = defaultdict(list)
         for loc in result:
-            if loc['uri'] == uri:
-                c.append(utils.range(loc['range']))
-            else:
-                other += 1
-        if c:
-            msg = libkak.select(c)
-            if other:
-                msg += '\necho Also at {} positions in other files'.format(other)
-            return msg
+            m[loc['uri']].append(utils.range(loc['range']))
+        if m:
+            def options():
+                for uri, pos in six.iteritems(m):
+                    loc = drop_prefix(uri_to_file(uri), pwd).lstrip('/') or uri
+                    entry = u'{} ({} references)'.format(loc, len(pos))
+                    yield entry, edit_uri_select(uri, pos)
+            return libkak.menu(options())
         else:
-            print('got no results', result)
+            return 'echo No results.'
 
     @handler('textDocument/definition',
              lambda pos, uri: {
@@ -501,22 +536,14 @@ def main(session, mock={}):
         if not result:
             return 'echo -color red No results!'
 
-        c = []
-        for loc in result:
-            p = utils.range(loc['range'])
-            c.append((loc['uri'], p))
-
-        options = []
-        for uri, (p0, p1) in c:
-            if uri.startswith('file://'):
-                uri = uri[len('file://'):]
-                uri = six.moves.urllib.parse.unquote(uri)
-                action = 'edit {}; {}'.format(uri, libkak.select([(p0, p1)]))
-            else:
-                action = 'echo -color red Cannot open {}'.format(uri)
-            line0, _ = p0
-            options.append((u'{}:{}'.format(uri, line0), action))
-            return libkak.menu(options)
+        def options():
+            for loc in result:
+                p0, p1 = utils.range(loc['range'])
+                uri = loc['uri']
+                action = edit_uri_select(uri, [(p0, p1)])
+                line0, _ = p0
+                yield u'{}:{}'.format(uri, line0), action
+        return libkak.menu(options())
 
     libkak.pipe(session, """#kak
     remove-hooks global lsp
