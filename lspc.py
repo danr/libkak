@@ -57,13 +57,46 @@ def info_somewhere(msg, pos, where):
             ]""".format(tmp=tmp)
 
 
-def complete_item(item):
-    # item['kind'] is ignored for now
+completionItemsKind = [
+    '',
+    'text',
+    'method',
+    'function',
+    'constructor',
+    'field',
+    'variable',
+    'class',
+    'interface',
+    'module',
+    'property',
+    'unit',
+    'value',
+    'enum',
+    'keyword',
+    'snippet',
+    'color',
+    'file',
+    'reference',
+]
+
+
+def complete_items(items):
+    try:
+        maxlen = max(len(item['label']) for item in items)
+    except ValueError:
+        maxlen = 0
+    return (complete_item(item, maxlen) for item in items)
+
+
+def complete_item(item, maxlen):
+    spaces = ' ' * (maxlen - len(item['label']))
+    kind_description = completionItemsKind[item.get('kind', 0)]
+    menu_entry = item['label'] + spaces + ' {MenuInfo}' + kind_description
     return (
         item['label'],
         '{}\n\n{}'.format(item.get('detail', ''),
                           item.get('documentation', '')[:500]),
-        item['label']
+        menu_entry
     )
 
 
@@ -304,7 +337,7 @@ def main(session, mock={}):
         """
         if not result:
             return
-        cs = map(complete_item, result.get('items', []))
+        cs = complete_items(result.get('items', []))
         s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
         setup = ''
         opt = 'option=lsp_completions'
