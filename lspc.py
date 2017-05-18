@@ -129,7 +129,10 @@ def complete_item(item, maxlen):
     spaces = ' ' * (maxlen - len(item['label']))
     kind_description = completionItemsKind[item.get('kind', 0)]
     if not kind_description:
-        kind_description = ''.join(item.get('detail', '').split()[0:1])
+        # match '(JSX Element)' and 'type' from typescript details
+        derived = re.match('(\w+|\(.+?\))', item.get('detail', ''))
+        if derived:
+            kind_description = derived.group(1)
     menu_entry = item['label'] + spaces + ' {MenuInfo}' + kind_description
     return (
         item['label'],
