@@ -122,13 +122,11 @@ class Langserver(object):
                     self.publish_diagnostics(msg['params'])
 
     def publish_diagnostics(self, msg):
-        if not msg['uri'].startswith('file://'):
+        buffile = utils.uri_to_file(msg['uri'])
+        client = self.client_editing.get(buffile)
+        if not client:
             return
-        buffile = msg['uri'][len('file://'):]
-        if buffile not in self.client_editing or not self.client_editing[buffile]:
-            return
-        r = libkak.Remote.onclient(
-            self.session, self.client_editing[buffile], sync=False)
+        r = libkak.Remote.onclient(self.session, client, sync=False)
         r.arg_config['disabled'] = (
             'kak_opt_lsp_' + self.filetype + '_disabled_diagnostics',
             libkak.Args.string)
@@ -156,5 +154,7 @@ class Langserver(object):
                     'message': diag['message']
                 })
             # todo: Set for the other buffers too (but they need to be opened)
-            pipe('set buffer=' + buffile + ' lsp_flags ' +
-                 utils.single_quoted(':'.join(flags)))
+            res = 'try %{add-highlighter flag_lines default lsp_flags}\n'
+            res += 'set buffer=' + buffile + ' lsp_flags '
+            res += utils.single_quoted(':'.join(flags))
+            pipe(res)

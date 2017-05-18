@@ -6,6 +6,35 @@ import inspect
 import json
 
 
+def drop_prefix(s, prefix):
+    """
+    If s starts with prefix, drop it, otherwise return s.
+
+    >>> print(drop_prefix('apabepa', 'ap'))
+    abepa
+    >>> print(drop_prefix('apabepa', 'cepa'))
+    apabepa
+    """
+    if s.startswith(prefix):
+        return s[len(prefix):]
+    else:
+        return s
+
+
+def uri_to_file(uri):
+    """
+    >>> print(uri_to_file('file:///home/user/proj/%40types.js'))
+    /home/user/proj/@types.js
+    >>> print(uri_to_file('http://example.com'))
+    None
+    """
+    if uri.startswith('file://'):
+        f = drop_prefix(uri, 'file://')
+        return six.moves.urllib.parse.unquote(f)
+    else:
+        return None
+
+
 def range(r):
     y0 = int(r['start']['line']) + 1
     x0 = int(r['start']['character']) + 1

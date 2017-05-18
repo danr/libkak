@@ -19,37 +19,8 @@ import re
 from langserver import Langserver
 
 
-def drop_prefix(s, prefix):
-    """
-    If s starts with prefix, drop it, otherwise return s.
-
-    >>> print(drop_prefix('apabepa', 'ap'))
-    abepa
-    >>> print(drop_prefix('apabepa', 'cepa'))
-    apabepa
-    """
-    if s.startswith(prefix):
-        return s[len(prefix):]
-    else:
-        return s
-
-
-def uri_to_file(uri):
-    """
-    >>> print(uri_to_file('file:///home/user/proj/%40types.js'))
-    /home/user/proj/@types.js
-    >>> print(uri_to_file('http://example.com'))
-    None
-    """
-    if uri.startswith('file://'):
-        f = drop_prefix(uri, 'file://')
-        return six.moves.urllib.parse.unquote(f)
-    else:
-        return None
-
-
 def edit_uri_select(uri, positions):
-    filename = uri_to_file(uri)
+    filename = utils.uri_to_file(uri)
     if filename:
         return 'edit {}; {}'.format(filename, libkak.select(positions))
     else:
@@ -518,7 +489,7 @@ def main(session, mock={}):
         if m:
             def options():
                 for uri, pos in six.iteritems(m):
-                    loc = drop_prefix(uri_to_file(uri), pwd).lstrip('/') or uri
+                    loc = utils.drop_prefix(utils.uri_to_file(uri), pwd).lstrip('/') or uri
                     entry = u'{} ({} references)'.format(loc, len(pos))
                     yield entry, edit_uri_select(uri, pos)
             return libkak.menu(options())
@@ -555,10 +526,6 @@ def main(session, mock={}):
     try %{declare-option str lsp_signature_help_chars}
     try %{declare-option completions lsp_completions}
     try %{declare-option line-flags lsp_flags}
-
-    hook -group lsp global WinDisplay .* %{
-        try %{add-highlighter flag_lines default lsp_flags}
-    }
 
     hook -group lsp global InsertChar .* %{
         try %{
