@@ -94,9 +94,8 @@ class Langserver(object):
         contentLength = 0
         while not self.proc.stdout.closed:
             line = self.proc.stdout.readline().decode('utf-8').strip()
-            if line.startswith('Header:  '):
-                # typescript-langserver has this extra Header:
-                line = line[len('Header:  '):]
+            # typescript-langserver has this extra Header:
+            line = utils.drop_prefix(line, 'Header: ')
             if line:
                 header, value = line.split(":")
                 if header == "Content-Length":
@@ -106,9 +105,9 @@ class Langserver(object):
                 try:
                     msg = json.loads(content)
                 except Exception:
-                    msg = "Error deserializing server output: " + content
-                    print(msg, file=sys.stderr)
-                    print('closed:', self.proc.stdout.closed)
+                    if not self.proc.stdout.closed:
+                        msg = "Error deserializing server output: " + content
+                        print(msg, file=sys.stderr)
                     continue
                 print('Response from langserver:', '\n'.join(
                     pprint.pformat(msg).split('\n')[:40]))
@@ -119,7 +118,7 @@ class Langserver(object):
                         print('error', pprint.pformat(msg), file=sys.stderr)
                     cb(msg)
                 if msg.get('method') == 'textDocument/publishDiagnostics':
-                    self.publish_diagnostics(msg['params'])
+                    self.publish_diagnostics(msg.get('params', {}))
 
     def publish_diagnostics(self, msg):
         buffile = utils.uri_to_file(msg['uri'])
@@ -146,11 +145,12 @@ class Langserver(object):
             for diag in msg['diagnostics']:
                 if disabled and re.match(disabled, diag['message']):
                     continue
-                (line0, col0), _ = utils.range(diag['range'])
+                (line0, col0), end = utils.range(diag['range'])
                 flags.append(str(line0) + '|' +
                              from_severity[diag.get('severity', 1)])
                 self.diagnostics[buffile][line0].append({
                     'col': col0,
+                    'end': end,
                     'message': diag['message']
                 })
             # todo: Set for the other buffers too (but they need to be opened)

@@ -265,7 +265,57 @@ def test_completion(kak, mock, send):
     assert(s == 'test.apa\n')
 
 
+@setup_test
+def test_diagnostics(kak, mock, send):
+    send('exec 7oabcdefghijklmnopqrstuvwxyz<esc>gg')
 
+    msg = utils.jsonrpc({
+        'method': 'textDocument/publishDiagnostics',
+        'params': {
+            'uri': 'file://*scratch*',
+            'diagnostics': [{
+                'message': 'line ' + str(y),
+                'range': {
+                    'start': {
+                        'line': y-1,
+                        'character': y*2-1
+                    },
+                    'end': {
+                        'line': y-1,
+                        'character': y*3-1
+                    }
+                }
+            } for y in [2, 4, 6]]
+        }
+    })
+    mock.stdout.write(msg)
+    time.sleep(0.1)
+    first = True
+    for y in [2,4,6,2,4]:
+        send('lsp-diagnostics-jump next')  # 2 4 6 2 4
+        if first:
+            first = False
+            print('listening...')
+            obj = process(mock)
+            pprint(obj)
+            assert(obj['method'] == 'textDocument/didChange')
+            assert(obj['params']['contentChanges'][0]['text'] == '\n' + 'abcdefghijklmnopqrstuvwxyz\n' * 7)
+        time.sleep(0.1)
+        call = libkak.Remote.onclient(kak.pid, 'unnamed0')
+        d = call(lambda selection_desc: selection_desc)
+        print('selection_desc:', d)
+        assert(d == ((y,2*y),(y,3*y-1)))  # end point exclusive according to protocol.md
+
+    send('lsp-diagnostics-jump prev')  # 2
+    time.sleep(0.1)
+    send('lsp-diagnostics docsclient')
+    time.sleep(0.3)
+    send('exec x')
+    time.sleep(0.3)
+    call = libkak.Remote.onclient(kak.pid, 'unnamed0')
+    s = call(lambda selection: selection)
+    print('final selection:', s)
+    assert(s == 'line 2\n')
 
 
 if __name__ == '__main__':
@@ -275,3 +325,4 @@ if __name__ == '__main__':
     test_completion(debug)
     test_sighelp(debug)
     test_hover(debug)
+    test_diagnostics(debug)

@@ -249,6 +249,7 @@ def main(session, mock={}):
                         print('Calling', f.__name__, pprint.pformat(d)[:500])
                         msg = utils.safe_kwcall(f, d)
                         if msg:
+                            print('Answer from', f.__name__, ':', msg)
                             d['pipe'](msg)
                     else:
                         print('Error: ', msg)
@@ -431,9 +432,10 @@ def main(session, mock={}):
         if next_line:
             y = next_line
             x = diag[y][0]['col']
-            msg = libkak.select([((y, x), (y, x))])
+            end = diag[y][0]['end']
+            msg = libkak.select([((y, x), end)])
             if where == 'none':
-                return where
+                return msg
             else:
                 info = original['lsp_diagnostics'](arg2, timestamp, y, buffile, langserver)
                 return msg + '\n' + (info or '')
