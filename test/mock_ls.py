@@ -1,3 +1,4 @@
+from __future__ import print_function
 import sys
 import os
 sys.path.append(os.getcwd())
@@ -84,6 +85,10 @@ def listen(p):
 
 
 def process(mock, result=None):
+    """
+    Listen for a message to the mock process and make a standard
+    reply or return result if it is not None.
+    """
     obj = listen(mock)
     method = obj['method']
     if result:
@@ -236,17 +241,13 @@ def test_sighelp(kak, mock, send):
 
 @setup_test
 def test_completion(kak, mock, send):
-    d = dict(count=0)
+    q = Queue()
 
     @libkak.Remote.hook(kak.pid, 'buffer', 'InsertCompletionShow',
                         client='unnamed0', sync_setup=True)
     def hook(pipe):
-        print('count:', d['count'])
-        if d['count'] == 0:
-            pipe('exec <esc>a; lsp-complete')
-        elif d['count'] == 1:
-            pipe("exec '<c-n><esc>\%'")
-        d['count'] += 1
+        pipe("exec '<c-n><esc>\%'")
+        q.put(())
     send('exec itest.')
 
     print('listening...')
@@ -257,18 +258,14 @@ def test_completion(kak, mock, send):
     obj = process(mock)
     assert(obj['method'] == 'textDocument/completion')
     assert(obj['params']['position'] == {'line': 0, 'character': 5})
-    # here comes second...
-    items = [{'label': 'bepus'}]
-    obj = process(mock, {'items': items})
-    assert(obj['method'] == 'textDocument/completion')
-    assert(obj['params']['position'] == {'line': 0, 'character': 5})
-
-    print('waiting for hooks to be triggered')
-    time.sleep(0.1)
+    q.get()
     call = libkak.Remote.onclient(kak.pid, 'unnamed0')
     s = call(lambda selection: selection)
     print('final selection:', s)
-    assert(s == 'test.bepus\n')
+    assert(s == 'test.apa\n')
+
+
+
 
 
 if __name__ == '__main__':
