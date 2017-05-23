@@ -546,4 +546,4 @@ def main(session, mock={}):
 
 
 if __name__ == '__main__':
-    main(int(sys.argv[1]))
+    main(sys.argv[1])
