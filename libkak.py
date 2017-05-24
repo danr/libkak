@@ -546,10 +546,10 @@ def _test_remote_commands_async():
     ... def write_position(pipe, line, column):
     ...      pipe(utils.join(('exec ', 'a', str(line), ':', str(column), '<esc>'), sep=''))
     >>> pipe(kak.pid, 'write-position', 'unnamed0')
-    >>> time.sleep(0.02)
+    >>> time.sleep(0.05)
     >>> pipe(kak.pid, 'exec a,<space><esc>', 'unnamed0', sync=True)
+    >>> time.sleep(0.02)
     >>> write_position('unnamed0')
-    >>> time.sleep(0.01)
     >>> pipe(kak.pid, 'exec \%H', 'unnamed0', sync=True)
     >>> Remote.onclient(kak.pid, 'unnamed0')(lambda selection: print(selection))
     1:1, 1:5

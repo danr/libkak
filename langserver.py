@@ -12,7 +12,6 @@ import os
 import six
 import sys
 import tempfile
-import libkak
 import utils
 import functools
 import re
@@ -20,14 +19,11 @@ import re
 
 class Langserver(object):
 
-    def __init__(self, filetype, session, pwd, cmd, mock={}):
+    def __init__(self, pwd, cmd, push=None, mock={}):
         self.cbs = {}
         self.diagnostics = defaultdict(dict)
-        self.session = session
-        self.client_editing = {}
-        self.filetype = filetype
-
-        print(filetype, ' spawns ', cmd)
+        self.push = push or utils.noop
+        self.pwd = pwd
 
         if cmd in mock:
             self.proc = mock[cmd]
@@ -35,7 +31,7 @@ class Langserver(object):
             self.proc = Popen(cmd.split(), stdin=PIPE,
                               stdout=PIPE, stderr=sys.stderr)
 
-        t = Thread(target=Langserver.spawn, args=(self, session, pwd))
+        t = Thread(target=Langserver.spawn, args=(self,))
         t.start()
         print('thread', t, 'started for', self.proc)
 
@@ -66,30 +62,16 @@ class Langserver(object):
             print('sent:', method)
         return k
 
-    def spawn(self, session, pwd):
+    def spawn(self):
 
-        rootUri = 'file://' + pwd
+        rootUri = 'file://' + self.pwd
 
-        @self.call('initialize', {
+        self.call('initialize', {
             'processId': os.getpid(),
             'rootUri': rootUri,
-            'rootPath': pwd,
+            'rootPath': self.pwd,
             'capabilities': {}
-        })
-        def initialized(msg):
-            result = msg['result']
-            capabilities = result.get('capabilities', {})
-            try:
-                signatureHelp = capabilities['signatureHelpProvider']
-                self.sig_help_chars = signatureHelp['triggerCharacters']
-            except KeyError:
-                self.sig_help_chars = []
-
-            try:
-                completionProvider = capabilities['completionProvider']
-                self.complete_chars = completionProvider['triggerCharacters']
-            except KeyError:
-                self.complete_chars = []
+        })(lambda msg: self.push('initialize', msg.get('result', {})))
 
         contentLength = 0
         while not self.proc.stdout.closed:
@@ -117,44 +99,6 @@ class Langserver(object):
                     if 'error' in msg:
                         print('error', pprint.pformat(msg), file=sys.stderr)
                     cb(msg)
-                if msg.get('method') == 'textDocument/publishDiagnostics':
-                    self.publish_diagnostics(msg.get('params', {}))
+                if 'id' not in msg and 'method' in msg:
+                    self.push(msg['method'], msg.get('params'))
 
-    def publish_diagnostics(self, msg):
-        buffile = utils.uri_to_file(msg['uri'])
-        client = self.client_editing.get(buffile)
-        if not client:
-            return
-        r = libkak.Remote.onclient(self.session, client, sync=False)
-        r.arg_config['disabled'] = (
-            'kak_opt_lsp_' + self.filetype + '_disabled_diagnostics',
-            libkak.Args.string)
-
-        @r
-        def _(timestamp, pipe, disabled):
-            self.diagnostics[buffile] = defaultdict(list)
-            self.diagnostics[buffile]['timestamp'] = timestamp
-            flags = [str(timestamp), '1|   ']
-            from_severity = [
-                '',
-                '{red}>> ',
-                '{yellow}>> ',
-                '{blue}>> ',
-                '{green}>> '
-            ]
-            for diag in msg['diagnostics']:
-                if disabled and re.match(disabled, diag['message']):
-                    continue
-                (line0, col0), end = utils.range(diag['range'])
-                flags.append(str(line0) + '|' +
-                             from_severity[diag.get('severity', 1)])
-                self.diagnostics[buffile][line0].append({
-                    'col': col0,
-                    'end': end,
-                    'message': diag['message']
-                })
-            # todo: Set for the other buffers too (but they need to be opened)
-            res = 'try %{add-highlighter flag_lines default lsp_flags}\n'
-            res += 'set buffer=' + buffile + ' lsp_flags '
-            res += utils.single_quoted(':'.join(flags))
-            pipe(res)

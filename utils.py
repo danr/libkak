@@ -163,3 +163,12 @@ def safe_kwcall(f, d):
     2
     """
     return f(*(d[k] for k in argnames(f)))
+
+
+def noop(*args, **kwargs):
+    """
+    Do nothing!
+
+    >>> noop(1, 2, 3)
+    """
+    return

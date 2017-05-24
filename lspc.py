@@ -149,6 +149,77 @@ def main(session, mock={}):
 
     langservers = {}
     timestamps = {}
+    message_handlers = {}
+
+    def message_handler(f):
+        message_handlers[f.__name__.replace('_', '/')] = f
+        return f
+
+    sig_help_chars = {}
+    complete_chars = {}
+
+    @message_handler
+    def initialize(filetype, result):
+        capabilities = result.get('capabilities', {})
+        try:
+            signatureHelp = capabilities['signatureHelpProvider']
+            sig_help_chars[filetype] = signatureHelp['triggerCharacters']
+        except KeyError:
+            sig_help_chars[filetype] = []
+
+        try:
+            completionProvider = capabilities['completionProvider']
+            complete_chars[filetype] = completionProvider['triggerCharacters']
+        except KeyError:
+            complete_chars[filetype] = []
+
+    diagnostics = {}
+    client_editing = {}
+
+    @message_handler
+    def textDocument_publishDiagnostics(filetype, params):
+        buffile = utils.uri_to_file(params['uri'])
+        client = client_editing.get((filetype, buffile))
+        if not client:
+            return
+        r = libkak.Remote.onclient(session, client, sync=False)
+        r.arg_config['disabled'] = (
+            'kak_opt_lsp_' + filetype + '_disabled_diagnostics',
+            libkak.Args.string)
+
+        @r
+        def _(timestamp, pipe, disabled):
+            diagnostics[filetype, buffile] = defaultdict(list)
+            diagnostics[filetype, buffile]['timestamp'] = timestamp
+            flags = [str(timestamp), '1|   ']
+            from_severity = [
+                '',
+                '{red}>> ',
+                '{yellow}>> ',
+                '{blue}>> ',
+                '{green}>> '
+            ]
+            for diag in params['diagnostics']:
+                if disabled and re.match(disabled, diag['message']):
+                    continue
+                (line0, col0), end = utils.range(diag['range'])
+                flags.append(str(line0) + '|' +
+                             from_severity[diag.get('severity', 1)])
+                diagnostics[filetype, buffile][line0].append({
+                    'col': col0,
+                    'end': end,
+                    'message': diag['message']
+                })
+            # todo: Set for the other buffers too (but they need to be opened)
+            msg = 'try %{add-highlighter flag_lines default lsp_flags}\n'
+            msg += 'set buffer=' + buffile + ' lsp_flags '
+            msg += utils.single_quoted(':'.join(flags))
+            pipe(msg)
+
+    def push_message(filetype):
+        def k(method, params):
+            message_handlers.get(method, utils.noop)(filetype, params)
+        return k
 
     def make_sync(method, make_params):
 
@@ -160,8 +231,8 @@ def main(session, mock={}):
             if cmd in langservers:
                 print(filetype + ' already spawned')
             else:
-                langservers[cmd] = Langserver(
-                    filetype, session, pwd, cmd, mock)
+                push = push_message(filetype)
+                langservers[cmd] = Langserver(pwd, cmd, push, mock)
 
             d['langserver'] = langserver = langservers[cmd]
 
@@ -176,7 +247,7 @@ def main(session, mock={}):
                     libkak.pipe(reply, write, client=client, sync=True)
                     print('finished writing to tempfile')
                     contents = open(tmp.name, 'r').read()
-                langserver.client_editing[buffile] = client
+                client_editing[filetype, buffile] = client
                 if old_timestamp is None:
                     langserver.call('textDocument/didOpen', {
                         'textDocument': {
@@ -274,7 +345,7 @@ def main(session, mock={}):
     chars_setup = set()
 
     @handler()
-    def lsp_sync(buffile, langserver):
+    def lsp_sync(buffile, filetype):
         """
         Synchronize the current file.
 
@@ -289,7 +360,8 @@ def main(session, mock={}):
         Hooked automatically to WinDisplay and filetype WinSetOption.
         """
         msg = 'echo synced'
-        if buffile not in chars_setup:
+        if buffile not in chars_setup and (
+                sig_help_chars.get(filetype) or complete_chars.get(filetype)):
             chars_setup.add(buffile)
 
             def s(opt, chars):
@@ -301,8 +373,8 @@ def main(session, mock={}):
                     return m
                 else:
                     return ''
-            msg += s('lsp_signature_help_chars', langserver.sig_help_chars)
-            msg += s('lsp_complete_chars', langserver.complete_chars)
+            msg += s('lsp_signature_help_chars', sig_help_chars.get(filetype))
+            msg += s('lsp_complete_chars', complete_chars.get(filetype))
         return msg
 
     @handler('textDocument/signatureHelp',
@@ -360,7 +432,7 @@ def main(session, mock={}):
         return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
 
     @handler(params='0..1', enum=[somewhere])
-    def lsp_diagnostics(arg1, timestamp, line, buffile, langserver):
+    def lsp_diagnostics(arg1, timestamp, line, buffile, filetype):
         """
         Describe diagnostics for the cursor line somewhere
         ('cursor', 'info' or 'docsclient'.)
@@ -372,7 +444,7 @@ def main(session, mock={}):
         }
         """
         where = arg1 or 'cursor'
-        diag = langserver.diagnostics[buffile]
+        diag = diagnostics[filetype, buffile]
         if line in diag and diag[line]:
             min_col = 98765
             msgs = []
@@ -384,7 +456,7 @@ def main(session, mock={}):
             return info_somewhere('\n'.join(msgs), pos, where)
 
     @handler(params='0..2', enum=[('next', 'prev'), somewhere + ['none']])
-    def lsp_diagnostics_jump(arg1, arg2, timestamp, line, buffile, langserver, pipe):
+    def lsp_diagnostics_jump(arg1, arg2, timestamp, line, buffile, filetype, pipe):
         """
         Jump to next or prev diagnostic (relative to the main cursor line)
 
@@ -395,7 +467,7 @@ def main(session, mock={}):
         """
         direction = arg1 or 'next'
         where = arg2 or 'none'
-        diag = langserver.diagnostics[buffile]
+        diag = diagnostics[filetype, buffile]
         if not diag:
             libkak._debug('no diagnostics')
             return
