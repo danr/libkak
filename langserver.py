@@ -95,7 +95,7 @@ class Langserver(object):
         while not self.proc.stdout.closed:
             line = self.proc.stdout.readline().decode('utf-8').strip()
             # typescript-langserver has this extra Header:
-            line = utils.drop_prefix(line, 'Header: ')
+            line = utils.drop_prefix(line, 'Header:  ')
             if line:
                 header, value = line.split(":")
                 if header == "Content-Length":
