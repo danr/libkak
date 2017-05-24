@@ -165,8 +165,6 @@ def main(session, mock={}):
 
             d['langserver'] = langserver = langservers[cmd]
 
-            q = Queue()
-
             old_timestamp = timestamps.get((filetype, buffile))
             if old_timestamp == timestamp:
                 print('no need to send update')
@@ -187,7 +185,7 @@ def main(session, mock={}):
                             'languageId': filetype,
                             'text': contents
                         }
-                    })(q.put)
+                    })()
                 else:
                     langserver.call('textDocument/didChange', {
                         'textDocument': {
@@ -195,13 +193,13 @@ def main(session, mock={}):
                             'version': timestamp
                         },
                         'contentChanges': [{'text': contents}]
-                    })(q.put)
+                    })()
                 print('sync: waiting for didChange reply...')
-                q.get()
                 print('sync: got didChange reply...')
 
             if method:
                 print(method, 'calling langserver')
+                q = Queue()
                 langserver.call(method, utils.safe_kwcall(
                     make_params, d))(q.put)
                 return q.get()

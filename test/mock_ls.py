@@ -142,11 +142,12 @@ def process(mock, result=None):
         result = {'items': items}
     else:
         raise RuntimeError('Unknown method: ' + method)
-    msg = utils.jsonrpc({
-        'id': obj['id'],
-        'result': result
-    })
-    mock.stdout.write(msg)
+    if 'id' in obj:
+        msg = utils.jsonrpc({
+            'id': obj['id'],
+            'result': result
+        })
+        mock.stdout.write(msg)
     return obj
 
 

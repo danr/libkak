@@ -43,15 +43,15 @@ class Langserver(object):
         """
         Assigns to cbs
         """
-        n = '{}-{}'.format(method, _private['n'])
         obj = {
-            'id': n,
             'method': method,
             'params': params
         }
         if cb:
+            n = '{}-{}'.format(method, _private['n'])
+            obj['id'] = n
             self.cbs[n] = cb
-        _private['n'] += 1
+            _private['n'] += 1
         return utils.jsonrpc(obj)
 
     def call(self, method, params):
