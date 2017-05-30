@@ -336,8 +336,7 @@ def main(session, mock={}):
                     echo -debug When handling {}:
                     echo -debug {}
                     echo -color red "Error from language client (see *debug* buffer)"
-                    '''.format(utils.single_quoted(f.__name__),
-                               utils.single_quoted(pprint.pformat(msg))))
+                    '''.format(utils.single_quoted(f.__name__), utils.single_quoted(msg)))
 
             return r(k)
         return decorate
@@ -444,7 +443,7 @@ def main(session, mock={}):
         }
         """
         where = arg1 or 'cursor'
-        diag = diagnostics[filetype, buffile]
+        diag = diagnostics.get((filetype, buffile), {})
         if line in diag and diag[line]:
             min_col = 98765
             msgs = []
@@ -467,7 +466,7 @@ def main(session, mock={}):
         """
         direction = arg1 or 'next'
         where = arg2 or 'none'
-        diag = diagnostics[filetype, buffile]
+        diag = diagnostics.get((filetype, buffile))
         if not diag:
             libkak._debug('no diagnostics')
             return
@@ -507,7 +506,7 @@ def main(session, mock={}):
             if where == 'none':
                 return msg
             else:
-                info = original['lsp_diagnostics'](arg2, timestamp, y, buffile, langserver)
+                info = original['lsp_diagnostics'](arg2, timestamp, y, buffile, filetype)
                 return msg + '\n' + (info or '')
 
     @handler('textDocument/hover',
