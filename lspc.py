@@ -567,6 +567,15 @@ def main(session, mock={}):
         else:
             return 'echo No results.'
 
+    @handler('workspace/executeCommand',
+             lambda args: {
+                 'command': args[0],
+                 'arguments': args[1:]},
+             params='1..')
+    def lsp_execute_command(args, result):
+        """Execute custom command"""
+        return 'echo ' + utils.single_quoted(str(result))
+
     @handler('textDocument/definition',
              lambda pos, uri: {
                  'textDocument': {'uri': uri},
@@ -575,6 +584,9 @@ def main(session, mock={}):
         """
         Go to the definition of the identifier at the main cursor.
         """
+        if not result:
+            return 'echo -color red No results!'
+
         if 'uri' in result:
             result = [result]
 
