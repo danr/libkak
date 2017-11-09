@@ -24,7 +24,7 @@ def edit_uri_select(uri, positions):
     if filename:
         return 'edit {}; {}'.format(filename, libkak.select(positions))
     else:
-        return 'echo -color red Cannot open {}'.format(uri)
+        return 'echo -markup {red}Cannot open {}'.format(uri)
 
 
 def format_pos(pos):
@@ -47,9 +47,9 @@ def info_somewhere(msg, pos, where):
     msg = msg.rstrip()
     if where == 'cursor':
         return 'info -placement above -anchor {} {}'.format(
-            format_pos(pos), utils.single_quoted(msg))
+            format_pos(pos), utils.single_quoted(utils.join(msg.split('\n')[0:10], '\n')))
     elif where == 'info':
-        return 'info ' + utils.single_quoted(msg)
+        return 'info ' + utils.single_quoted(utils.join(msg.split('\n')[0:20], '\n'))
     elif where == 'docsclient':
         tmp = tempfile.mktemp()
         open(tmp, 'wb').write(utils.encode(msg))
@@ -177,6 +177,20 @@ def main(session, mock={}):
     client_editing = {}
 
     @message_handler
+    def window_logMessage(filetype, params):
+        if 'uri' not in params:
+            return
+        buffile = utils.uri_to_file(params['uri'])
+        client = client_editing.get((filetype, buffile))
+        if not client:
+            return
+
+        @libkak.Remote.onclient(session, client, sync=False)
+        def _():
+            return 'echo ' + utils.single_quote_escape(params['message'])
+
+
+    @message_handler
     def textDocument_publishDiagnostics(filetype, params):
         buffile = utils.uri_to_file(params['uri'])
         client = client_editing.get((filetype, buffile))
@@ -191,13 +205,13 @@ def main(session, mock={}):
         def _(timestamp, pipe, disabled):
             diagnostics[filetype, buffile] = defaultdict(list)
             diagnostics[filetype, buffile]['timestamp'] = timestamp
-            flags = [str(timestamp), '1|   ']
+            flags = [str(timestamp), '1|  ']
             from_severity = [
-                '',
-                '{red}>> ',
-                '{yellow}>> ',
-                '{blue}>> ',
-                '{green}>> '
+                u'',
+                u'{red}\u2022 ',
+                u'{yellow}\u2022 ',
+                u'{blue}\u2022 ',
+                u'{green}\u2022 '
             ]
             for diag in params['diagnostics']:
                 if disabled and re.match(disabled, diag['message']):
@@ -211,7 +225,7 @@ def main(session, mock={}):
                     'message': diag['message']
                 })
             # todo: Set for the other buffers too (but they need to be opened)
-            msg = 'try %{add-highlighter flag_lines default lsp_flags}\n'
+            msg = 'try %{add-highlighter window/ flag_lines default lsp_flags}\n'
             msg += 'set buffer=' + buffile + ' lsp_flags '
             msg += utils.single_quoted(':'.join(flags))
             pipe(msg)
@@ -325,7 +339,7 @@ def main(session, mock={}):
                         d['pipe']('''
                         echo -debug When handling {}:
                         echo -debug {}
-                        echo -color red "Error from language server (see *debug* buffer)"
+                        echo -markup "{{red}}Error from language server (see *debug* buffer)"
                         '''.format(utils.single_quoted(f.__name__),
                                    utils.single_quoted(pprint.pformat(msg))))
                 except:
@@ -335,7 +349,7 @@ def main(session, mock={}):
                     d['pipe']('''
                     echo -debug When handling {}:
                     echo -debug {}
-                    echo -color red "Error from language client (see *debug* buffer)"
+                    echo -markup "{{red}}Error from language client (see *debug* buffer)"
                     '''.format(utils.single_quoted(f.__name__), utils.single_quoted(msg)))
 
             return r(k)
@@ -585,13 +599,13 @@ def main(session, mock={}):
         Go to the definition of the identifier at the main cursor.
         """
         if not result:
-            return 'echo -color red No results!'
+            return 'echo -markup {red}No results!'
 
         if 'uri' in result:
             result = [result]
 
         if not result:
-            return 'echo -color red No results!'
+            return 'echo -markup {red}No results!'
 
         def options():
             for loc in result:
@@ -608,7 +622,7 @@ def main(session, mock={}):
     try %{declare-option str lsp_complete_chars}
     try %{declare-option str lsp_signature_help_chars}
     try %{declare-option completions lsp_completions}
-    try %{declare-option line-flags lsp_flags}
+    try %{declare-option line-specs lsp_flags}
 
     hook -group lsp global InsertChar .* %{
         try %{
