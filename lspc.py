@@ -178,6 +178,13 @@ def main(session, mock={}):
 
     @message_handler
     def window_logMessage(filetype, params):
+
+        libkak._debug('Log message', params)
+
+        if 'message' in params:
+            libkak._debug('Adding debug print', params)
+            libkak.pipe(session, 'echo -debug ' + utils.single_quote_escape(params['message']))
+
         if 'uri' not in params:
             return
         buffile = utils.uri_to_file(params['uri'])
@@ -185,10 +192,7 @@ def main(session, mock={}):
         if not client:
             return
 
-        @libkak.Remote.onclient(session, client, sync=False)
-        def _():
-            return 'echo ' + utils.single_quote_escape(params['message'])
-
+        libkak.pipe(session, 'echo ' + utils.single_quote_escape(params['message']), client=client)
 
     @message_handler
     def textDocument_publishDiagnostics(filetype, params):
@@ -251,7 +255,7 @@ def main(session, mock={}):
             d['langserver'] = langserver = langservers[cmd]
 
             old_timestamp = timestamps.get((filetype, buffile))
-            if old_timestamp == timestamp:
+            if old_timestamp == timestamp and not d['force']:
                 print('no need to send update')
                 reply('')
             else:
@@ -295,7 +299,7 @@ def main(session, mock={}):
 
     original = {}
 
-    def handler(method=None, make_params=None, params='0', enum=None):
+    def handler(method=None, make_params=None, params='0', enum=None, force=False):
         def decorate(f):
             original[f.__name__] = f
 
@@ -324,6 +328,7 @@ def main(session, mock={}):
             def k(d):
                 try:
                     d['d'] = d
+                    d['force'] = force
                     # print('handler calls sync', pprint.pformat(d))
                     msg = utils.safe_kwcall(sync, d)
                     # print('sync called', status, result, pprint.pformat(d))
@@ -357,7 +362,7 @@ def main(session, mock={}):
 
     chars_setup = set()
 
-    @handler()
+    @handler(force=True)
     def lsp_sync(buffile, filetype):
         """
         Synchronize the current file.
