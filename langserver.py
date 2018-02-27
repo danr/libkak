@@ -84,6 +84,8 @@ class Langserver(object):
                     contentLength = int(value)
             else:
                 content = self.proc.stdout.read(contentLength).decode('utf-8')
+                if content == "":
+                    continue
                 try:
                     msg = json.loads(content)
                 except Exception:
