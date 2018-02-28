@@ -42,7 +42,6 @@ def range(r):
     x1 = int(r['end']['character'])
     return ((y0, x0), (y1, x1))
 
-
 def jsonrpc(obj):
     obj['jsonrpc'] = '2.0'
     msg = json.dumps(obj)

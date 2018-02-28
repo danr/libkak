@@ -26,7 +26,25 @@ def edit_uri_select(uri, positions):
     else:
         return 'echo -markup {red}Cannot open {}'.format(uri)
 
+def apply_textedit(textedit):
+    return libkak.change(utils.range(textedit['range']), textedit['newText'])
 
+def apply_textdocumentedit(edit):
+    filename = utils.uri_to_file(edit['textDocument']['uri'])
+    if filename:
+        return 'edit {}; {}; write'.format(filename, '; '.join(apply_textedit(textedit)
+            for textedit in edit['edits']))
+    else:
+        return 'echo -markup {red}Cannot open {}'.format(uri)
+
+def apply_workspaceedit(wsedit):
+    if wsedit.get('documentChanges', None):
+        return '; '.join(apply_textdocumentedit(edit) for edit in wsedit['documentChanges'])
+    elif wsedit.get('changes', None):
+        return 'echo -markup {red}Language server does not support documentChanges'
+    else:
+        return 'echo -markup {red}Invalid workspaceedit; echo -debug {}'.format(wsedit)
+    
 def format_pos(pos):
     """
     >>> print(format_pos({'line': 5, 'character': 0}))
@@ -168,7 +186,7 @@ class Client:
         self.chars_setup = set()
         self.session = None
         self.mock = None
-        self.handlers = {}
+        self.builders = {}
 
     def push_message(self, filetype):
         def k(method, params):
@@ -187,6 +205,9 @@ class Client:
             else:
                 push = self.push_message(filetype)
                 self.langservers[cmd] = Langserver(pwd, cmd, push, self.mock)
+
+            if not client:
+                print("Client was empty when syncing")
 
             d['langserver'] = langserver = self.langservers[cmd]
 
@@ -243,13 +264,13 @@ class Client:
             return f
         return decorator
 
-    def handler(self, method=None, make_params=None, params='0', enum=None, force=False):
+    def handler(self, method=None, make_params=None, params='0', enum=None, force=False, hidden=False):
         def decorate(f):
             def builder():
                 self.original[f.__name__] = f
 
                 r = libkak.Remote(self.session)
-                r.command(r, params=params, enum=enum, sync_setup=True)
+                r.command(r, params=params, enum=enum, sync_setup=True, hidden=hidden)
                 r_pre = r.pre
                 r.pre = lambda f: r_pre(f) + '''
                         [[ -z $kak_opt_filetype ]] && exit
@@ -303,7 +324,7 @@ class Client:
                         '''.format(utils.single_quoted(f.__name__), utils.single_quoted(msg)))
 
                 return r(k)
-            self.handlers[f.__name__] = builder
+            self.builders[f.__name__] = builder
             return builder
         return decorate
 
@@ -314,7 +335,7 @@ class Client:
         self.session = session
         self.mock = mock
 
-        for k, builder in self.handlers.items():
+        for k, builder in self.builders.items():
             builder()
 
         libkak.pipe(session, """#kak
@@ -336,9 +357,9 @@ class Client:
             }
         }
 
-        hook -group lsp global WinSetOption filetype=.* lsp-sync
         hook -group lsp global WinDisplay .* lsp-sync
-
+        hook -group lsp global BufWritePost .* lsp-send-did-save
+        hook -group lsp global BufClose .* lsp-buffer-deleted
         """ + messages)
 
 client = Client()
@@ -431,9 +452,9 @@ def lsp_sync(buffile, filetype):
           are set for the buffer according to what the language server
           suggests. (These are examined at an InsertChar hook.)
 
-    Hooked automatically to WinDisplay and filetype WinSetOption.
+    Hooked automatically to WinDisplay.
     """
-    msg = 'echo synced'
+    msg = ''
     if buffile not in client.chars_setup and (
             client.sig_help_chars.get(filetype) or client.complete_chars.get(filetype)):
         client.chars_setup.add(buffile)
@@ -450,6 +471,25 @@ def lsp_sync(buffile, filetype):
         msg += s('lsp_signature_help_chars', client.sig_help_chars.get(filetype))
         msg += s('lsp_complete_chars', client.complete_chars.get(filetype))
     return msg
+
+@client.handler(hidden=True)
+def lsp_send_did_save(langserver, uri):
+    """
+    Send textDocument/didSave to server
+    """
+    langserver.call('textDocument/didSave', {
+        'textDocument': {
+            'uri': uri
+        },
+    })()
+
+@client.handler(hidden=True)
+def lsp_buffer_deleted(filetype, buffile):
+    """
+    Clear the data for a deleted buffer
+    """
+    client.client_editing[filetype, buffile] = None
+    client.timestamps[(filetype, buffile)] = None
 
 @client.handler('textDocument/signatureHelp',
          lambda pos, uri: {
@@ -676,6 +716,15 @@ def lsp_goto_definition(result):
             line0, _ = p0
             yield u'{}:{}'.format(uri, line0), action
     return libkak.menu(options())
+
+@client.handler('textDocument/rename',
+         lambda pos, uri, arg1: {
+             'textDocument': {'uri': uri},
+             'position': pos,
+             'newName': arg1 },
+         params='1')
+def lsp_rename(result, arg1, pos, uri):
+    return apply_workspaceedit(result)
 
 if __name__ == '__main__':
     client.main(sys.argv[1])

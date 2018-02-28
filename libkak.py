@@ -96,7 +96,7 @@ class Remote(object):
 
     @staticmethod
     def command(self_or_session, params='0', enum=[],
-                sync_setup=False, sync_python_calls=False):
+                sync_setup=False, sync_python_calls=False, hidden=False):
         r = Remote._resolve(self_or_session)
         r.sync_setup = sync_setup
 
@@ -113,9 +113,10 @@ class Remote(object):
         r_pre = r.pre
 
         def pre(f):
-            s = 'def -allow-override -params {params} -docstring {docstring} {name}'
+            s = 'def -allow-override -params {params} -docstring {docstring} {name} {hidden}'
             s = s.format(name=r._f_name(),
                          params=params,
+                         hidden=(hidden and "-hidden") or '',
                          docstring=utils.single_quoted(utils.deindent(f.__doc__ or '')))
             if enum:
                 sh = '\n'.join('[ $kak_token_to_complete -eq {} ] && printf "{}\n"'.format(i, '\\n'.join(es))
@@ -258,6 +259,14 @@ def select(cursors):
     return 'select ' + ':'.join('%d.%d,%d.%d' % tuple(it.chain(*pos))
                                 for pos in cursors)
 
+def change(range, new_text):
+    """
+    A command to change some text
+
+    >>> print(change(((1,2), (3,4)), 'test'))
+    select 1.2,3.4; execute-keys -draft ctest<esc> 
+    """
+    return select([range]) + '; execute-keys -draft c' + new_text + '<esc>'
 
 def menu(options, auto_single=True):
     """

@@ -107,19 +107,19 @@ def cquery_publishSemanticHighlighting(filetype, params):
     buffile = utils.uri_to_file(params['uri'])
     clientp = client.client_editing.get((filetype, buffile))
     if not clientp:
+        print("No client found for {} {}".format(filetype, buffile))
+        print("client_editing: {}".format(client.client_editing))
         return
     r = libkak.Remote.onclient(client.session, clientp, sync=False)
-    r.arg_config['disabled'] = (
-        'kak_opt_lsp_' + filetype + '_disabled_sem_hl',
-        libkak.Args.string)
 
     @r
-    def _(timestamp, pipe, disabled):
+    def _(timestamp, pipe):
         flags = [str(timestamp)]
 
         for hl in params['symbols']:
             face = face_for_symbol(hl)
             if face is None:
+                print("No face found for {}".format(hl))
                 continue
             for range in hl['ranges']:
                 (line0, col0), (line1, col1) = utils.range(range)
