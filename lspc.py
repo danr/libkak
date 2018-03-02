@@ -166,12 +166,16 @@ def main(session, mock={}):
             sig_help_chars[filetype] = signatureHelp['triggerCharacters']
         except KeyError:
             sig_help_chars[filetype] = []
+        except TypeError:
+            sig_help_chars[filetype] = []
 
         try:
             completionProvider = capabilities['completionProvider']
             complete_chars[filetype] = completionProvider['triggerCharacters']
         except KeyError:
             complete_chars[filetype] = []
+        except TypeError:
+            sig_help_chars[filetype] = []
 
     diagnostics = {}
     client_editing = {}
@@ -641,7 +645,7 @@ def main(session, mock={}):
     }
 
     hook -group lsp global WinSetOption filetype=.* lsp-sync
-    hook -group lsp global WinDisplay .* lsp-sync
+    # hook -group lsp global WinDisplay .* lsp-sync
     """)
 
 
