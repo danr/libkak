@@ -374,12 +374,16 @@ def initialize(filetype, result):
         client.sig_help_chars[filetype] = signatureHelp['triggerCharacters']
     except KeyError:
         client.sig_help_chars[filetype] = []
+    except TypeError:
+        sig_help_chars[filetype] = []
 
     try:
         completionProvider = capabilities['completionProvider']
         client.complete_chars[filetype] = completionProvider['triggerCharacters']
     except KeyError:
         client.complete_chars[filetype] = []
+    except TypeError:
+        sig_help_chars[filetype] = []
 
 @client.message_handler
 def window_logMessage(filetype, params):
