@@ -56,3 +56,7 @@ def lsp-start %{
 Change the path accordingly.
 
 Happy hacking!
+
+## License
+
+MIT
