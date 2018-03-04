@@ -44,7 +44,7 @@ def apply_workspaceedit(wsedit):
         return 'echo -markup {red}Language server does not support documentChanges'
     else:
         return 'echo -markup {red}Invalid workspaceedit; echo -debug {}'.format(wsedit)
-    
+
 def format_pos(pos):
     """
     >>> print(format_pos({'line': 5, 'character': 0}))
@@ -357,378 +357,379 @@ class Client:
             }
         }
 
-        hook -group lsp global WinDisplay .* lsp-sync
+        # hook -group lsp global WinDisplay .* lsp-sync
         hook -group lsp global BufWritePost .* lsp-send-did-save
         hook -group lsp global BufClose .* lsp-buffer-deleted
         """ + messages)
 
-client = Client()
+def makeClient():
+    client = Client()
 
-# Handlers
+    # Handlers
 
-@client.message_handler
-def initialize(filetype, result):
-    capabilities = result.get('capabilities', {})
-    try:
-        signatureHelp = capabilities['signatureHelpProvider']
-        client.sig_help_chars[filetype] = signatureHelp['triggerCharacters']
-    except KeyError:
-        client.sig_help_chars[filetype] = []
-    except TypeError:
-        sig_help_chars[filetype] = []
-
-    try:
-        completionProvider = capabilities['completionProvider']
-        client.complete_chars[filetype] = completionProvider['triggerCharacters']
-    except KeyError:
-        client.complete_chars[filetype] = []
-    except TypeError:
-        sig_help_chars[filetype] = []
-
-@client.message_handler
-def window_logMessage(filetype, params):
-
-    libkak._debug('Log message', params)
-
-    if 'message' in params:
-        libkak._debug('Adding debug print', params)
-        libkak.pipe(client.session, 'echo -debug ' + utils.single_quote_escape(params['message']))
-
-    if 'uri' not in params:
-        return
-    buffile = utils.uri_to_file(params['uri'])
-    clientp = client.client_editing.get((filetype, buffile))
-    if not clientp:
-        return
-
-    libkak.pipe(client.session, 'echo ' + utils.single_quote_escape(params['message']), client=clientp)
-
-@client.message_handler
-def textDocument_publishDiagnostics(filetype, params):
-    buffile = utils.uri_to_file(params['uri'])
-    clientp = client.client_editing.get((filetype, buffile))
-    if not clientp:
-        return
-    r = libkak.Remote.onclient(client.session, clientp, sync=False)
-    r.arg_config['disabled'] = (
-        'kak_opt_lsp_' + filetype + '_disabled_diagnostics',
-        libkak.Args.string)
-
-    @r
-    def _(timestamp, pipe, disabled):
-        client.diagnostics[filetype, buffile] = defaultdict(list)
-        client.diagnostics[filetype, buffile]['timestamp'] = timestamp
-        flags = [str(timestamp), '1|  ']
-        from_severity = [
-            u'',
-            u'{red}\u2022 ',
-            u'{yellow}\u2022 ',
-            u'{blue}\u2022 ',
-            u'{green}\u2022 '
-        ]
-        for diag in params['diagnostics']:
-            if disabled and re.match(disabled, diag['message']):
-                continue
-            (line0, col0), end = utils.range(diag['range'])
-            flags.append(str(line0) + '|' +
-                         from_severity[diag.get('severity', 1)])
-            client.diagnostics[filetype, buffile][line0].append({
-                'col': col0,
-                'end': end,
-                'message': diag['message']
-            })
-        # todo: Set for the other buffers too (but they need to be opened)
-        msg = 'try %{add-highlighter window/ flag_lines default lsp_flags}\n'
-        msg += 'set buffer=' + buffile + ' lsp_flags '
-        msg += utils.single_quoted(':'.join(flags))
-        pipe(msg)
-
-@client.handler(force=True)
-def lsp_sync(buffile, filetype):
-    """
-    Synchronize the current file.
-
-    Makes sure that:
-        * the language server is registered at the language server,
-        * the language server has an up-to-date view on the buffer
-          (even if it is not saved),
-        * the options lsp_signature_help_chars and lsp_complete_chars
-          are set for the buffer according to what the language server
-          suggests. (These are examined at an InsertChar hook.)
-
-    Hooked automatically to WinDisplay.
-    """
-    msg = ''
-    if buffile not in client.chars_setup and (
-            client.sig_help_chars.get(filetype) or client.complete_chars.get(filetype)):
-        client.chars_setup.add(buffile)
-
-        def s(opt, chars):
-            if chars:
-                m = '\nset buffer='
-                m += buffile
-                m += ' ' + opt
-                m += ' ' + utils.single_quoted(''.join(chars))
-                return m
-            else:
-                return ''
-        msg += s('lsp_signature_help_chars', client.sig_help_chars.get(filetype))
-        msg += s('lsp_complete_chars', client.complete_chars.get(filetype))
-    return msg
-
-@client.handler(hidden=True)
-def lsp_send_did_save(langserver, uri):
-    """
-    Send textDocument/didSave to server
-    """
-    langserver.call('textDocument/didSave', {
-        'textDocument': {
-            'uri': uri
-        },
-    })()
-
-@client.handler(hidden=True)
-def lsp_buffer_deleted(filetype, buffile):
-    """
-    Clear the data for a deleted buffer
-    """
-    client.client_editing[filetype, buffile] = None
-    client.timestamps[(filetype, buffile)] = None
-
-@client.handler('textDocument/signatureHelp',
-         lambda pos, uri: {
-             'textDocument': {'uri': uri},
-             'position': pos},
-         params='0..1', enum=[somewhere])
-def lsp_signature_help(arg1, pos, uri, result):
-    """
-    Write signature help by the cursor, info or docsclient.
-    """
-    if not result:
-        return
-    where = arg1 or 'cursor'
-    try:
-        active = result['signatures'][result['activeSignature']]
-        pn = result['activeParameter']
-        func_label = active.get('label', '')
-        params = active['parameters']
-        label = nice_sig(func_label, params, pn, pos)
-    except LookupError:
+    @client.message_handler
+    def initialize(filetype, result):
+        capabilities = result.get('capabilities', {})
         try:
-            label = pyls_signatureHelp(result, pos)
+            signatureHelp = capabilities['signatureHelpProvider']
+            client.sig_help_chars[filetype] = signatureHelp['triggerCharacters']
+        except KeyError:
+            client.sig_help_chars[filetype] = []
+        except TypeError:
+            sig_help_chars[filetype] = []
+
+        try:
+            completionProvider = capabilities['completionProvider']
+            client.complete_chars[filetype] = completionProvider['triggerCharacters']
+        except KeyError:
+            client.complete_chars[filetype] = []
+        except TypeError:
+            sig_help_chars[filetype] = []
+
+    @client.message_handler
+    def window_logMessage(filetype, params):
+
+        libkak._debug('Log message', params)
+
+        if 'message' in params:
+            libkak._debug('Adding debug print', params)
+            libkak.pipe(client.session, 'echo -debug ' + utils.single_quote_escape(params['message']))
+
+        if 'uri' not in params:
+            return
+        buffile = utils.uri_to_file(params['uri'])
+        clientp = client.client_editing.get((filetype, buffile))
+        if not clientp:
+            return
+
+        libkak.pipe(client.session, 'echo ' + utils.single_quote_escape(params['message']), client=clientp)
+
+    @client.message_handler
+    def textDocument_publishDiagnostics(filetype, params):
+        buffile = utils.uri_to_file(params['uri'])
+        clientp = client.client_editing.get((filetype, buffile))
+        if not clientp:
+            return
+        r = libkak.Remote.onclient(client.session, clientp, sync=False)
+        r.arg_config['disabled'] = (
+            'kak_opt_lsp_' + filetype + '_disabled_diagnostics',
+            libkak.Args.string)
+
+        @r
+        def _(timestamp, pipe, disabled):
+            client.diagnostics[filetype, buffile] = defaultdict(list)
+            client.diagnostics[filetype, buffile]['timestamp'] = timestamp
+            flags = [str(timestamp), '1|  ']
+            from_severity = [
+                u'',
+                u'{red}\u2022 ',
+                u'{yellow}\u2022 ',
+                u'{blue}\u2022 ',
+                u'{green}\u2022 '
+            ]
+            for diag in params['diagnostics']:
+                if disabled and re.match(disabled, diag['message']):
+                    continue
+                (line0, col0), end = utils.range(diag['range'])
+                flags.append(str(line0) + '|' +
+                             from_severity[diag.get('severity', 1)])
+                client.diagnostics[filetype, buffile][line0].append({
+                    'col': col0,
+                    'end': end,
+                    'message': diag['message']
+                })
+            # todo: Set for the other buffers too (but they need to be opened)
+            msg = 'try %{add-highlighter window/ flag_lines default lsp_flags}\n'
+            msg += 'set buffer=' + buffile + ' lsp_flags '
+            msg += utils.single_quoted(':'.join(flags))
+            pipe(msg)
+
+    @client.handler(force=True)
+    def lsp_sync(buffile, filetype):
+        """
+        Synchronize the current file.
+
+        Makes sure that:
+            * the language server is registered at the language server,
+            * the language server has an up-to-date view on the buffer
+              (even if it is not saved),
+            * the options lsp_signature_help_chars and lsp_complete_chars
+              are set for the buffer according to what the language server
+              suggests. (These are examined at an InsertChar hook.)
+        """
+        msg = ''
+        if buffile not in client.chars_setup and (
+                client.sig_help_chars.get(filetype) or client.complete_chars.get(filetype)):
+            client.chars_setup.add(buffile)
+
+            def s(opt, chars):
+                if chars:
+                    m = '\nset buffer='
+                    m += buffile
+                    m += ' ' + opt
+                    m += ' ' + utils.single_quoted(''.join(chars))
+                    return m
+                else:
+                    return ''
+            msg += s('lsp_signature_help_chars', client.sig_help_chars.get(filetype))
+            msg += s('lsp_complete_chars', client.complete_chars.get(filetype))
+        return msg
+
+    @client.handler(hidden=True)
+    def lsp_send_did_save(langserver, uri):
+        """
+        Send textDocument/didSave to server
+        """
+        langserver.call('textDocument/didSave', {
+            'textDocument': {
+                'uri': uri
+            },
+        })()
+
+    @client.handler(hidden=True)
+    def lsp_buffer_deleted(filetype, buffile):
+        """
+        Clear the data for a deleted buffer
+        """
+        client.client_editing[filetype, buffile] = None
+        client.timestamps[(filetype, buffile)] = None
+
+    @client.handler('textDocument/signatureHelp',
+             lambda pos, uri: {
+                 'textDocument': {'uri': uri},
+                 'position': pos},
+             params='0..1', enum=[somewhere])
+    def lsp_signature_help(arg1, pos, uri, result):
+        """
+        Write signature help by the cursor, info or docsclient.
+        """
+        if not result:
+            return
+        where = arg1 or 'cursor'
+        try:
+            active = result['signatures'][result['activeSignature']]
+            pn = result['activeParameter']
+            func_label = active.get('label', '')
+            params = active['parameters']
+            label = nice_sig(func_label, params, pn, pos)
         except LookupError:
-            if not result.get('signatures'):
-                label = ''
+            try:
+                label = pyls_signatureHelp(result, pos)
+            except LookupError:
+                if not result.get('signatures'):
+                    label = ''
+                else:
+                    label = str(result)
+        return info_somewhere(label, pos, where)
+
+    @client.handler('textDocument/completion',
+             lambda pos, uri: {
+                 'textDocument': {'uri': uri},
+                 'position': pos})
+    def lsp_complete(line, column, timestamp, buffile, completers, result):
+        """
+        Complete at the main cursor.
+
+        Example to force completion at word begin:
+
+        map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp-complete)<ret>'
+
+        The option lsp_completions is prepended to the completers if missing.
+        """
+        if not result:
+            return
+        cs = complete_items(result.get('items', []))
+        s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
+        setup = ''
+        opt = 'option=lsp_completions'
+        if opt not in completers:
+            # put ourclient as the first completer if not listed
+            setup = 'set buffer=' + buffile + ' completers '
+            setup += ':'.join([opt] + completers) + '\n'
+        return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
+
+    @client.handler(params='0..1', enum=[somewhere])
+    def lsp_diagnostics(arg1, timestamp, line, buffile, filetype):
+        """
+        Describe diagnostics for the cursor line somewhere
+        ('cursor', 'info' or 'docsclient'.)
+
+        Hook this to NormalIdle if you want:
+
+        hook -group lsp global NormalIdle .* %{
+            lsp-diagnostics cursor
+        }
+        """
+        where = arg1 or 'cursor'
+        diag = client.diagnostics.get((filetype, buffile), {})
+        if line in diag and diag[line]:
+            min_col = 98765
+            msgs = []
+            for d in diag[line]:
+                if d['col'] < min_col:
+                    min_col = d['col']
+                msgs.append(d['message'])
+            pos = {'line': line - 1, 'character': min_col - 1}
+            return info_somewhere('\n'.join(msgs), pos, where)
+
+    @client.handler(params='0..2', enum=[('next', 'prev'), somewhere + ['none']])
+    def lsp_diagnostics_jump(arg1, arg2, timestamp, line, buffile, filetype, pipe):
+        """
+        Jump to next or prev diagnostic (relative to the main cursor line)
+
+        Example configuration:
+
+        map global user n ':lsp-diagonstics-jump next cursor<ret>'
+        map global user p ':lsp-diagonstics-jump prev cursor<ret>'
+        """
+        direction = arg1 or 'next'
+        where = arg2 or 'none'
+        diag = client.diagnostics.get((filetype, buffile))
+        if not diag:
+            libkak._debug('no diagnostics')
+            return
+        if timestamp != diag.get('timestamp'):
+            pipe('lsp-sync')
+        next_line = None
+        first_line = None
+        last_line = None
+        for other_line in six.iterkeys(diag):
+            if other_line == 'timestamp':
+                continue
+            if not first_line or other_line < first_line:
+                first_line = other_line
+            if not last_line or other_line > last_line:
+                last_line = other_line
+            if next_line:
+                if direction == 'prev':
+                    cmp = next_line < other_line < line
+                else:
+                    cmp = next_line > other_line > line
             else:
-                label = str(result)
-    return info_somewhere(label, pos, where)
-
-@client.handler('textDocument/completion',
-         lambda pos, uri: {
-             'textDocument': {'uri': uri},
-             'position': pos})
-def lsp_complete(line, column, timestamp, buffile, completers, result):
-    """
-    Complete at the main cursor.
-
-    Example to force completion at word begin:
-
-    map global insert <a-c> '<a-;>:eval -draft %(exec b; lsp-complete)<ret>'
-
-    The option lsp_completions is prepended to the completers if missing.
-    """
-    if not result:
-        return
-    cs = complete_items(result.get('items', []))
-    s = utils.single_quoted(libkak.complete(line, column, timestamp, cs))
-    setup = ''
-    opt = 'option=lsp_completions'
-    if opt not in completers:
-        # put ourclient as the first completer if not listed
-        setup = 'set buffer=' + buffile + ' completers '
-        setup += ':'.join([opt] + completers) + '\n'
-    return setup + 'set buffer=' + buffile + ' lsp_completions ' + s
-
-@client.handler(params='0..1', enum=[somewhere])
-def lsp_diagnostics(arg1, timestamp, line, buffile, filetype):
-    """
-    Describe diagnostics for the cursor line somewhere
-    ('cursor', 'info' or 'docsclient'.)
-
-    Hook this to NormalIdle if you want:
-
-    hook -group lsp global NormalIdle .* %{
-        lsp-diagnostics cursor
-    }
-    """
-    where = arg1 or 'cursor'
-    diag = client.diagnostics.get((filetype, buffile), {})
-    if line in diag and diag[line]:
-        min_col = 98765
-        msgs = []
-        for d in diag[line]:
-            if d['col'] < min_col:
-                min_col = d['col']
-            msgs.append(d['message'])
-        pos = {'line': line - 1, 'character': min_col - 1}
-        return info_somewhere('\n'.join(msgs), pos, where)
-
-@client.handler(params='0..2', enum=[('next', 'prev'), somewhere + ['none']])
-def lsp_diagnostics_jump(arg1, arg2, timestamp, line, buffile, filetype, pipe):
-    """
-    Jump to next or prev diagnostic (relative to the main cursor line)
-
-    Example configuration:
-
-    map global user n ':lsp-diagonstics-jump next cursor<ret>'
-    map global user p ':lsp-diagonstics-jump prev cursor<ret>'
-    """
-    direction = arg1 or 'next'
-    where = arg2 or 'none'
-    diag = client.diagnostics.get((filetype, buffile))
-    if not diag:
-        libkak._debug('no diagnostics')
-        return
-    if timestamp != diag.get('timestamp'):
-        pipe('lsp-sync')
-    next_line = None
-    first_line = None
-    last_line = None
-    for other_line in six.iterkeys(diag):
-        if other_line == 'timestamp':
-            continue
-        if not first_line or other_line < first_line:
-            first_line = other_line
-        if not last_line or other_line > last_line:
-            last_line = other_line
+                if direction == 'prev':
+                    cmp = other_line < line
+                else:
+                    cmp = other_line > line
+            if cmp:
+                next_line = other_line
+        if not next_line and direction == 'prev':
+            next_line = last_line
+        if not next_line and direction == 'next':
+            next_line = first_line
         if next_line:
-            if direction == 'prev':
-                cmp = next_line < other_line < line
+            y = next_line
+            x = diag[y][0]['col']
+            end = diag[y][0]['end']
+            msg = libkak.select([((y, x), end)])
+            if where == 'none':
+                return msg
             else:
-                cmp = next_line > other_line > line
-        else:
-            if direction == 'prev':
-                cmp = other_line < line
+                info = client.original['lsp_diagnostics'](arg2, timestamp, y, buffile, filetype)
+                return msg + '\n' + (info or '')
+
+    @client.handler('textDocument/hover',
+             lambda pos, uri: {
+                 'textDocument': {'uri': uri},
+                 'position': pos},
+             params='0..1', enum=[somewhere])
+    def lsp_hover(arg1, pos, uri, result):
+        """
+        Display hover information somewhere ('cursor', 'info' or
+        'docsclient'.)
+
+        Hook this to NormalIdle if you want:
+
+        hook -group lsp global NormalIdle .* %{
+            lsp-hover cursor
+        }
+        """
+        where = arg1 or 'cursor'
+        label = []
+        if not result:
+            return
+        contents = result['contents']
+        if not isinstance(contents, list):
+            contents = [contents]
+        for content in contents:
+            if isinstance(content, dict) and 'value' in content:
+                label.append(content['value'])
             else:
-                cmp = other_line > line
-        if cmp:
-            next_line = other_line
-    if not next_line and direction == 'prev':
-        next_line = last_line
-    if not next_line and direction == 'next':
-        next_line = first_line
-    if next_line:
-        y = next_line
-        x = diag[y][0]['col']
-        end = diag[y][0]['end']
-        msg = libkak.select([((y, x), end)])
-        if where == 'none':
-            return msg
-        else:
-            info = client.original['lsp_diagnostics'](arg2, timestamp, y, buffile, filetype)
-            return msg + '\n' + (info or '')
+                label.append(content)
+        label = '\n\n'.join(label)
+        return info_somewhere(label, pos, where)
 
-@client.handler('textDocument/hover',
-         lambda pos, uri: {
-             'textDocument': {'uri': uri},
-             'position': pos},
-         params='0..1', enum=[somewhere])
-def lsp_hover(arg1, pos, uri, result):
-    """
-    Display hover information somewhere ('cursor', 'info' or
-    'docsclient'.)
+    @client.handler('textDocument/references',
+             lambda arg1, pos, uri: {
+                 'textDocument': {'uri': uri},
+                 'position': pos,
+                 'context': {
+                     'includeDeclaration': arg1 != 'false'}},
+             params='0..1', enum=[('true', 'false')])
+    def lsp_references(arg1, pwd, result):
+        """
+        Find the references to the identifier at the main cursor.
 
-    Hook this to NormalIdle if you want:
-
-    hook -group lsp global NormalIdle .* %{
-        lsp-hover cursor
-    }
-    """
-    where = arg1 or 'cursor'
-    label = []
-    if not result:
-        return
-    contents = result['contents']
-    if not isinstance(contents, list):
-        contents = [contents]
-    for content in contents:
-        if isinstance(content, dict) and 'value' in content:
-            label.append(content['value'])
-        else:
-            label.append(content)
-    label = '\n\n'.join(label)
-    return info_somewhere(label, pos, where)
-
-@client.handler('textDocument/references',
-         lambda arg1, pos, uri: {
-             'textDocument': {'uri': uri},
-             'position': pos,
-             'context': {
-                 'includeDeclaration': arg1 != 'false'}},
-         params='0..1', enum=[('true', 'false')])
-def lsp_references(arg1, pwd, result):
-    """
-    Find the references to the identifier at the main cursor.
-
-    Takes one argument, whether to include the declaration or not.
-    (default: true)
-    """
-    m = defaultdict(list)
-    for loc in result:
-        m[loc['uri']].append(utils.range(loc['range']))
-    if m:
-        def options():
-            for uri, pos in six.iteritems(m):
-                loc = utils.drop_prefix(utils.uri_to_file(uri), pwd).lstrip('/') or uri
-                entry = u'{} ({} references)'.format(loc, len(pos))
-                yield entry, edit_uri_select(uri, pos)
-        return libkak.menu(options())
-    else:
-        return 'echo No results.'
-
-@client.handler('workspace/executeCommand',
-         lambda args: {
-             'command': args[0],
-             'arguments': args[1:]},
-         params='1..')
-def lsp_execute_command(args, result):
-    """Execute custom command"""
-    return 'echo ' + utils.single_quoted(str(result))
-
-@client.handler('textDocument/definition',
-         lambda pos, uri: {
-             'textDocument': {'uri': uri},
-             'position': pos})
-def lsp_goto_definition(result):
-    """
-    Go to the definition of the identifier at the main cursor.
-    """
-    if not result:
-        return 'echo -markup {red}No results!'
-
-    if 'uri' in result:
-        result = [result]
-
-    if not result:
-        return 'echo -markup {red}No results!'
-
-    def options():
+        Takes one argument, whether to include the declaration or not.
+        (default: true)
+        """
+        m = defaultdict(list)
         for loc in result:
-            p0, p1 = utils.range(loc['range'])
-            uri = loc['uri']
-            action = edit_uri_select(uri, [(p0, p1)])
-            line0, _ = p0
-            yield u'{}:{}'.format(uri, line0), action
-    return libkak.menu(options())
+            m[loc['uri']].append(utils.range(loc['range']))
+        if m:
+            def options():
+                for uri, pos in six.iteritems(m):
+                    loc = utils.drop_prefix(utils.uri_to_file(uri), pwd).lstrip('/') or uri
+                    entry = u'{} ({} references)'.format(loc, len(pos))
+                    yield entry, edit_uri_select(uri, pos)
+            return libkak.menu(options())
+        else:
+            return 'echo No results.'
 
-@client.handler('textDocument/rename',
-         lambda pos, uri, arg1: {
-             'textDocument': {'uri': uri},
-             'position': pos,
-             'newName': arg1 },
-         params='1')
-def lsp_rename(result, arg1, pos, uri):
-    return apply_workspaceedit(result)
+    @client.handler('workspace/executeCommand',
+             lambda args: {
+                 'command': args[0],
+                 'arguments': args[1:]},
+             params='1..')
+    def lsp_execute_command(args, result):
+        """Execute custom command"""
+        return 'echo ' + utils.single_quoted(str(result))
+
+    @client.handler('textDocument/definition',
+             lambda pos, uri: {
+                 'textDocument': {'uri': uri},
+                 'position': pos})
+    def lsp_goto_definition(result):
+        """
+        Go to the definition of the identifier at the main cursor.
+        """
+        if not result:
+            return 'echo -markup {red}No results!'
+
+        if 'uri' in result:
+            result = [result]
+
+        if not result:
+            return 'echo -markup {red}No results!'
+
+        def options():
+            for loc in result:
+                p0, p1 = utils.range(loc['range'])
+                uri = loc['uri']
+                action = edit_uri_select(uri, [(p0, p1)])
+                line0, _ = p0
+                yield u'{}:{}'.format(uri, line0), action
+        return libkak.menu(options())
+
+    @client.handler('textDocument/rename',
+             lambda pos, uri, arg1: {
+                 'textDocument': {'uri': uri},
+                 'position': pos,
+                 'newName': arg1 },
+             params='1')
+    def lsp_rename(result, arg1, pos, uri):
+        return apply_workspaceedit(result)
+
+    return client
 
 if __name__ == '__main__':
-    client.main(sys.argv[1])
+    makeClient().main(sys.argv[1])

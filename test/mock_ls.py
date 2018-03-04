@@ -171,7 +171,7 @@ def setup_test(f):
             print('Sending:', s)
             libkak.pipe(kak.pid, s, client='unnamed0', sync=sync)
 
-        t = Thread(target=lspc.main, args=(kak.pid, {'mock': mock}))
+        t = Thread(target=lspc.makeClient().main, args=(kak.pid, {'mock': mock}))
         t.daemon = True
         t.start()
 
@@ -187,12 +187,13 @@ def setup_test(f):
         print('listening for initalization...')
         obj = process(mock)
         assert(obj['method'] == 'initialize')
+        print('listening for didOpen..')
         obj = process(mock)
         assert(obj['method'] == 'textDocument/didOpen')
         assert(obj['params']['textDocument']['text'] == '\n')
 
         print('waiting for hooks to be set up...')
-        time.sleep(0.1)
+        time.sleep(0.25)
 
         f(kak, mock, send)
 

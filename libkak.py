@@ -264,7 +264,7 @@ def change(range, new_text):
     A command to change some text
 
     >>> print(change(((1,2), (3,4)), 'test'))
-    select 1.2,3.4; execute-keys -draft ctest<esc> 
+    select 1.2,3.4; execute-keys -draft ctest<esc>
     """
     return select([range]) + '; execute-keys -draft c' + new_text + '<esc>'
 
