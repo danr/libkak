@@ -26,8 +26,10 @@ def edit_uri_select(uri, positions):
     else:
         return 'echo -markup {red}Cannot open {}'.format(uri)
 
+
 def apply_textedit(textedit):
     return libkak.change(utils.range(textedit['range']), textedit['newText'])
+
 
 def apply_textdocumentedit(edit):
     filename = utils.uri_to_file(edit['textDocument']['uri'])
@@ -35,7 +37,8 @@ def apply_textdocumentedit(edit):
         return 'edit {}; {}; write'.format(filename, '; '.join(apply_textedit(textedit)
             for textedit in edit['edits']))
     else:
-        return 'echo -markup {red}Cannot open {}'.format(uri)
+        return 'echo -markup {red}Cannot open {}'.format(filename)
+
 
 def apply_workspaceedit(wsedit):
     if wsedit.get('documentChanges', None):
@@ -53,12 +56,12 @@ def format_pos(pos):
     return '{}.{}'.format(pos['line'] + 1, pos['character'] + 1)
 
 
-somewhere = 'cursor info docsclient'.split()
+somewhere = 'cursor info docsclient echo'.split()
 
 
 def info_somewhere(msg, pos, where):
     """
-    where = cursor | info | docsclient
+    where = cursor | info | docsclient | echo
     """
     if not msg:
         return
@@ -81,6 +84,8 @@ def info_somewhere(msg, pos, where):
               try %[rmhl number_lines]
               %sh[rm {tmp}]
             ]""".format(tmp=tmp)
+    elif where == 'echo':
+        return 'echo ' + utils.single_quoted(msg.split('\n')[-1])
 
 
 completionItemsKind = [
@@ -501,7 +506,7 @@ def makeClient():
              params='0..1', enum=[somewhere])
     def lsp_signature_help(arg1, pos, uri, result):
         """
-        Write signature help by the cursor, info or docsclient.
+        Write signature help by the cursor, info, echo or docsclient.
         """
         if not result:
             return
@@ -552,7 +557,7 @@ def makeClient():
     def lsp_diagnostics(arg1, timestamp, line, buffile, filetype):
         """
         Describe diagnostics for the cursor line somewhere
-        ('cursor', 'info' or 'docsclient'.)
+        ('cursor', 'info', 'echo' or 'docsclient'.)
 
         Hook this to NormalIdle if you want:
 
@@ -634,7 +639,7 @@ def makeClient():
              params='0..1', enum=[somewhere])
     def lsp_hover(arg1, pos, uri, result):
         """
-        Display hover information somewhere ('cursor', 'info' or
+        Display hover information somewhere ('cursor', 'info', 'echo' or
         'docsclient'.)
 
         Hook this to NormalIdle if you want:
