@@ -300,6 +300,7 @@ def complete(line, column, timestamp, completions):
     """
     rows = (utils.join((utils.backslash_escape('|:', x) for x in c), sep='|')
             for c in completions)
+
     return u'{}.{}@{}:{}'.format(line, column, timestamp, utils.join(rows, sep=':'))
 
 

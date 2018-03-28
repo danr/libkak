@@ -34,8 +34,9 @@ def apply_textedit(textedit):
 def apply_textdocumentedit(edit):
     filename = utils.uri_to_file(edit['textDocument']['uri'])
     if filename:
-        return 'edit {}; {}; write'.format(filename, '; '.join(apply_textedit(textedit)
-            for textedit in edit['edits']))
+        return 'edit {}; {}; write'.format(filename,
+                                           '; '.join(apply_textedit(textedit)
+                                                     for textedit in edit['edits']))
     else:
         return 'echo -markup {red}Cannot open {}'.format(filename)
 
@@ -47,6 +48,7 @@ def apply_workspaceedit(wsedit):
         return 'echo -markup {red}Language server does not support documentChanges'
     else:
         return 'echo -markup {red}Invalid workspaceedit; echo -debug {}'.format(wsedit)
+
 
 def format_pos(pos):
     """
@@ -135,8 +137,9 @@ def complete_item(item, maxlen):
         if derived:
             kind_description = derived.group(1)
     menu_entry = item['label'] + spaces + ' {MenuInfo}' + kind_description
+    insertText = item.get('insertText', item['label'])
     return (
-        item['label'],
+        insertText,
         '{}\n\n{}'.format(item.get('detail', ''),
                           item.get('documentation', '')[:500]),
         menu_entry
@@ -173,6 +176,7 @@ def nice_sig(func_label, params, pn, pos):
     if pos['character'] < 0:
         pos['character'] = 0
     return label
+
 
 class Client:
 
@@ -367,6 +371,7 @@ class Client:
         hook -group lsp global BufClose .* lsp-buffer-deleted
         """ + messages)
 
+
 def makeClient():
     client = Client()
 
@@ -381,7 +386,7 @@ def makeClient():
         except KeyError:
             client.sig_help_chars[filetype] = []
         except TypeError:
-            sig_help_chars[filetype] = []
+            client.sig_help_chars[filetype] = []
 
         try:
             completionProvider = capabilities['completionProvider']
@@ -389,7 +394,7 @@ def makeClient():
         except KeyError:
             client.complete_chars[filetype] = []
         except TypeError:
-            sig_help_chars[filetype] = []
+            client.sig_help_chars[filetype] = []
 
     @client.message_handler
     def window_logMessage(filetype, params):
